@@ -3,3 +3,7 @@ scraper/.auth_state.json
 .playwright-mcp/
 __pycache__/
 *.pyc
+data/app.db
+data/app.db-wal
+data/app.db-shm
+data/app.db.bak

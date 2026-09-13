@@ -18,8 +18,92 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  min-height: 100vh;
+}
+
+#app-root {
   display: flex;
   min-height: 100vh;
+}
+
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px;
+  max-width: 420px;
+  width: 100%;
+}
+
+.auth-box h1 {
+  font-size: 20px;
+  margin: 0 0 10px;
+}
+
+#auth-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 16px 0;
+}
+
+.auth-tab {
+  flex: 1;
+}
+
+.auth-tab.active {
+  background: var(--accent);
+  color: #04101f;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-form label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.auth-form input {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.auth-error {
+  color: var(--bad);
+  font-size: 13px;
+}
+
+#user-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+#user-name {
+  flex: 1;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#user-bar button {
+  padding: 4px 8px;
 }
 
 #sidebar {

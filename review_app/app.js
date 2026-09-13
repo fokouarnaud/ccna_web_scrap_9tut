@@ -1,10 +1,3 @@
-const STORAGE_KEYS = {
-  flagged: "ccna_flagged_v1",
-  seen: "ccna_seen_v1",
-  quizStats: "ccna_quiz_stats_v1",
-  examHistory: "ccna_exam_history_v1",
-};
-
 const EXAM_PASS_PCT = 82; // rough equivalent of the ~825/1000 passing score mentioned in the CCNA FAQ
 const EXAM_DEFAULT_CATEGORY = "CCNA 200-301";
 const EXAM_SECONDS_PER_QUESTION = 120; // 2 min/question, derived from the 60q/120min real exam pace
@@ -12,6 +5,7 @@ const EXAM_SLOW_FACTOR = 1.5; // a question taking > 1.5x the average time count
 const EXAM_MAX_MINUTES = 120;
 
 const state = {
+  user: null, // {username, email, display_name}
   pages: [], // all Q&A pages
   genericPages: [], // lab sims / tutorial-style pages
   questions: [], // flattened, each with pageRef
@@ -19,75 +13,21 @@ const state = {
   seen: new Set(),
   quizStats: {}, // category -> {correct, total}
   examHistory: [], // past exam attempts
-  currentView: { type: "page", pageUrl: null }, // page | flagged | quiz | generic | exam-setup | exam | exam-results
+  currentView: { type: "page", pageUrl: null }, // page | flagged | quiz | generic | exam-setup | exam | exam-results | account
   globalAnswersHidden: true,
   quiz: null, // active quiz session state
   exam: null, // active/finished exam session state
   examTimerHandle: null,
 };
 
-function loadSet(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch (e) {
-    return new Set();
-  }
-}
-
-function saveSet(key, set) {
-  try {
-    localStorage.setItem(key, JSON.stringify(Array.from(set)));
-  } catch (e) {
-    /* ignore quota / privacy-mode errors */
-  }
-}
-
-function loadStats() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.quizStats);
-    return raw ? JSON.parse(raw) : {};
-  } catch (e) {
-    return {};
-  }
-}
-
-function saveStats() {
-  try {
-    localStorage.setItem(STORAGE_KEYS.quizStats, JSON.stringify(state.quizStats));
-  } catch (e) {
-    /* ignore */
-  }
-}
-
-function loadExamHistory() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.examHistory);
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function saveExamHistory() {
-  try {
-    localStorage.setItem(STORAGE_KEYS.examHistory, JSON.stringify(state.examHistory));
-  } catch (e) {
-    /* ignore */
-  }
-}
-
 function questionId(pageUrl, number) {
   return `${pageUrl}::${number}`;
 }
 
 async function loadData() {
-  const [qRes, gRes] = await Promise.all([
-    fetch("../data/ccna_questions.json"),
-    fetch("../data/lab_sims.json"),
-  ]);
-  state.pages = await qRes.json();
-  state.genericPages = await gRes.json();
+  const [qaPages, genericPages] = await Promise.all([Api.getQuestions(), Api.getLabSims()]);
+  state.pages = qaPages;
+  state.genericPages = genericPages;
 
   state.questions = [];
   for (const page of state.pages) {
@@ -102,6 +42,14 @@ async function loadData() {
       });
     }
   }
+}
+
+async function loadProgress() {
+  const progress = await Api.getProgress();
+  state.seen = new Set(progress.seen || []);
+  state.flagged = new Set(progress.flagged || []);
+  state.quizStats = progress.quizStats || {};
+  state.examHistory = progress.examHistory || [];
 }
 
 function buildSidebar() {
@@ -211,6 +159,8 @@ function render() {
     renderExam(main);
   } else if (view.type === "exam-results") {
     renderExamResults(main);
+  } else if (view.type === "account") {
+    renderAccountPanel(main);
   } else {
     main.innerHTML = `<div class="empty-state">Sélectionne une catégorie dans le menu.</div>`;
   }
@@ -328,18 +278,19 @@ function highlightChoices(choicesList, correctLetters) {
 function markSeen(id) {
   if (!state.seen.has(id)) {
     state.seen.add(id);
-    saveSet(STORAGE_KEYS.seen, state.seen);
+    Api.markSeen(id).catch((e) => console.error("markSeen failed", e));
     updateSidebarCounts();
   }
 }
 
 function toggleFlag(id) {
-  if (state.flagged.has(id)) {
-    state.flagged.delete(id);
-  } else {
+  const nowFlagged = !state.flagged.has(id);
+  if (nowFlagged) {
     state.flagged.add(id);
+  } else {
+    state.flagged.delete(id);
   }
-  saveSet(STORAGE_KEYS.flagged, state.flagged);
+  Api.setFlag(id, nowFlagged).catch((e) => console.error("setFlag failed", e));
 }
 
 function updateSidebarCounts() {
@@ -563,7 +514,7 @@ function recordQuizStat(category, isCorrect) {
   if (!state.quizStats[category]) state.quizStats[category] = { correct: 0, total: 0 };
   state.quizStats[category].total += 1;
   if (isCorrect) state.quizStats[category].correct += 1;
-  saveStats();
+  Api.recordQuizStat(category, isCorrect).catch((e) => console.error("recordQuizStat failed", e));
 }
 
 function renderQuizResults(main) {
@@ -876,28 +827,36 @@ function finishExam(timedOut) {
   exam.durationSeconds = exam.timeLimitSeconds - Math.max(0, exam.remainingSeconds);
 
   let score = 0;
-  let flaggedChanged = false;
+  const unflaggedIds = [];
+  const questionResults = [];
   for (const q of exam.questions) {
     markSeen(q.id);
-    const given = new Set(exam.answers[q.id] || []);
+    const given = Array.from(exam.answers[q.id] || []);
     const correctSet = new Set(q.answer);
-    const isCorrect = given.size > 0 && correctSet.size === given.size && [...given].every((l) => correctSet.has(l));
+    const isCorrect = given.length > 0 && correctSet.size === given.length && given.every((l) => correctSet.has(l));
     if (isCorrect) score += 1;
+
+    questionResults.push({
+      questionKey: q.id,
+      given,
+      timeSeconds: exam.timings[q.id] || 0,
+      isCorrect,
+    });
 
     // In the special "difficult questions" exam, a correct answer means the
     // question is mastered — take it out of the to-review pool.
     if (exam.isDifficultReview && isCorrect && state.flagged.has(q.id)) {
       state.flagged.delete(q.id);
-      flaggedChanged = true;
+      unflaggedIds.push(q.id);
     }
   }
   exam.score = score;
-  if (flaggedChanged) {
-    saveSet(STORAGE_KEYS.flagged, state.flagged);
+  if (unflaggedIds.length) {
+    Api.setFlagsBulk([], unflaggedIds).catch((e) => console.error("setFlagsBulk failed", e));
     updateSidebarCounts();
   }
 
-  state.examHistory.push({
+  const examRecord = {
     date: new Date().toISOString(),
     mode: exam.mode,
     label: exam.label,
@@ -906,8 +865,11 @@ function finishExam(timedOut) {
     durationSeconds: exam.durationSeconds,
     timeLimitSeconds: exam.timeLimitSeconds,
     timedOut: exam.timedOut,
-  });
-  saveExamHistory();
+    isDifficultReview: exam.isDifficultReview,
+    questionResults,
+  };
+  state.examHistory.push(examRecord);
+  Api.recordExam(examRecord).catch((e) => console.error("recordExam failed", e));
 
   setView({ type: "exam-results" });
 }
@@ -1077,7 +1039,7 @@ function renderExamResults(main) {
 
   document.getElementById("exam-flag-missed").addEventListener("click", () => {
     for (const q of missed) state.flagged.add(q.id);
-    saveSet(STORAGE_KEYS.flagged, state.flagged);
+    Api.setFlagsBulk(missed.map((q) => q.id), []).catch((e) => console.error("setFlagsBulk failed", e));
     updateSidebarCounts();
     render();
   });
@@ -1093,7 +1055,7 @@ function renderExamResults(main) {
 
   document.getElementById("exam-flag-slow").addEventListener("click", () => {
     for (const q of slowQuestions) state.flagged.add(q.id);
-    saveSet(STORAGE_KEYS.flagged, state.flagged);
+    Api.setFlagsBulk(slowQuestions.map((q) => q.id), []).catch((e) => console.error("setFlagsBulk failed", e));
     updateSidebarCounts();
     render();
   });
@@ -1229,32 +1191,206 @@ function setupToolbar() {
   });
 }
 
-async function init() {
-  state.flagged = loadSet(STORAGE_KEYS.flagged);
-  state.seen = loadSet(STORAGE_KEYS.seen);
-  state.quizStats = loadStats();
-  state.examHistory = loadExamHistory();
+function renderAccountPanel(main) {
+  renderPageHeader(main, "Mon compte", "Tes informations et ta progression sont stockées de façon permanente côté serveur (SQLite) — indépendantes du navigateur.");
+
+  const infoBox = document.createElement("div");
+  infoBox.className = "question-card";
+  infoBox.innerHTML = `
+    <div class="page-meta">Nom d'utilisateur (non modifiable) : <strong>${escapeHtml(state.user.username)}</strong></div>
+    <br>
+    <label>Nom affiché<br><input type="text" id="account-display-name" value="${escapeHtml(state.user.display_name || "")}"></label>
+    <br><br>
+    <label>Email<br><input type="email" id="account-email" value="${escapeHtml(state.user.email || "")}"></label>
+    <br><br>
+    <div id="account-info-error" class="auth-error hidden"></div>
+    <button class="primary" id="account-save">Enregistrer</button>
+  `;
+  main.appendChild(infoBox);
+
+  document.getElementById("account-save").addEventListener("click", async () => {
+    const errorEl = document.getElementById("account-info-error");
+    errorEl.classList.add("hidden");
+    try {
+      const display_name = document.getElementById("account-display-name").value.trim();
+      const email = document.getElementById("account-email").value.trim();
+      await Api.updateMe({ display_name, email: email || null });
+      state.user.display_name = display_name;
+      state.user.email = email;
+      document.getElementById("user-name").textContent = display_name || state.user.username;
+      alert("Informations mises à jour.");
+    } catch (e) {
+      errorEl.textContent = e.message;
+      errorEl.classList.remove("hidden");
+    }
+  });
+
+  const pwBox = document.createElement("div");
+  pwBox.className = "question-card";
+  pwBox.innerHTML = `
+    <div class="page-title" style="font-size:16px;margin-bottom:6px;">Changer le mot de passe</div>
+    <label>Nouveau mot de passe (6 caractères min.)<br><input type="password" id="account-new-password" minlength="6" autocomplete="new-password"></label>
+    <br><br>
+    <div id="account-password-error" class="auth-error hidden"></div>
+    <button id="account-password-save">Changer le mot de passe</button>
+  `;
+  main.appendChild(pwBox);
+
+  document.getElementById("account-password-save").addEventListener("click", async () => {
+    const errorEl = document.getElementById("account-password-error");
+    errorEl.classList.add("hidden");
+    const password = document.getElementById("account-new-password").value;
+    try {
+      await Api.changePassword(password);
+      document.getElementById("account-new-password").value = "";
+      alert("Mot de passe changé.");
+    } catch (e) {
+      errorEl.textContent = e.message;
+      errorEl.classList.remove("hidden");
+    }
+  });
+
+  const dangerBox = document.createElement("div");
+  dangerBox.className = "question-card";
+  dangerBox.innerHTML = `
+    <div class="page-title" style="font-size:16px;margin-bottom:6px; color: var(--bad);">Supprimer mon compte</div>
+    <div class="page-meta" style="margin-bottom:10px;">Action irréversible : supprime ton compte et toute ta progression (questions vues, difficiles, quiz, examens) de la base de données.</div>
+    <button class="danger" id="account-delete">Supprimer définitivement mon compte</button>
+  `;
+  main.appendChild(dangerBox);
+
+  document.getElementById("account-delete").addEventListener("click", async () => {
+    if (!confirm("Supprimer définitivement ton compte et toutes tes données ? Cette action est irréversible.")) return;
+    if (!confirm("Confirme une dernière fois : supprimer le compte maintenant ?")) return;
+    try {
+      await Api.deleteMe();
+      Api.clearToken();
+      location.reload();
+    } catch (e) {
+      alert("Erreur lors de la suppression : " + e.message);
+    }
+  });
+}
+
+function showAuthScreen() {
+  document.getElementById("auth-screen").classList.remove("hidden");
+  document.getElementById("app-root").classList.add("hidden");
+}
+
+function showApp() {
+  document.getElementById("auth-screen").classList.add("hidden");
+  document.getElementById("app-root").classList.remove("hidden");
+}
+
+function setupAuthScreen() {
+  const tabs = document.querySelectorAll(".auth-tab");
+  const loginForm = document.getElementById("login-form");
+  const registerForm = document.getElementById("register-form");
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      tabs.forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      if (tab.dataset.tab === "login") {
+        loginForm.classList.remove("hidden");
+        registerForm.classList.add("hidden");
+      } else {
+        registerForm.classList.remove("hidden");
+        loginForm.classList.add("hidden");
+      }
+    });
+  });
+
+  loginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errorEl = document.getElementById("login-error");
+    errorEl.classList.add("hidden");
+    const username = document.getElementById("login-username").value.trim();
+    const password = document.getElementById("login-password").value;
+    try {
+      const res = await Api.login(username, password);
+      Api.setToken(res.token);
+      state.user = res.user;
+      await startApp();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.classList.remove("hidden");
+    }
+  });
+
+  registerForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errorEl = document.getElementById("register-error");
+    errorEl.classList.add("hidden");
+    const username = document.getElementById("register-username").value.trim();
+    const email = document.getElementById("register-email").value.trim();
+    const password = document.getElementById("register-password").value;
+    try {
+      const res = await Api.register(username, password, email || null);
+      Api.setToken(res.token);
+      state.user = res.user;
+      await startApp();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.classList.remove("hidden");
+    }
+  });
+}
+
+function setupUserBar() {
+  document.getElementById("user-name").textContent = state.user.display_name || state.user.username;
+  document.getElementById("account-btn").addEventListener("click", () => setView({ type: "account" }));
+  document.getElementById("logout-btn").addEventListener("click", async () => {
+    try {
+      await Api.logout();
+    } catch (e) {
+      /* ignore network errors on logout */
+    }
+    Api.clearToken();
+    location.reload();
+  });
+}
+
+async function startApp() {
+  showApp();
 
   try {
     await loadData();
+    await loadProgress();
   } catch (e) {
     document.getElementById("main-content").innerHTML = `
       <div class="empty-state">
-        Impossible de charger les données (data/ccna_questions.json).<br><br>
-        Les navigateurs bloquent le chargement de fichiers locaux via <code>file://</code>.<br>
-        Lance un petit serveur local depuis le dossier du projet, par ex. :<br><br>
-        <code>python -m http.server 8000</code><br><br>
-        puis ouvre <code>http://localhost:8000/review_app/</code>.
+        Impossible de charger les données depuis le serveur : ${escapeHtml(e.message || String(e))}<br><br>
+        Vérifie que le serveur Flask est lancé (<code>python -m server.app</code>) et que la base contient des données
+        (<code>python -m server.import_data</code>).
       </div>`;
     return;
   }
 
   buildSidebar();
   setupToolbar();
+  setupUserBar();
   updateProgressBar();
   setView({ type: state.pages.length ? "page" : "quiz-setup", pageUrl: state.pages.length ? state.pages[0].url : null });
 
   setInterval(updateProgressBar, 2000);
+}
+
+async function init() {
+  setupAuthScreen();
+
+  const token = Api.getToken();
+  if (token) {
+    try {
+      const res = await Api.me();
+      state.user = res.user;
+      await startApp();
+      return;
+    } catch (e) {
+      Api.clearToken();
+    }
+  }
+  showAuthScreen();
 }
 
 document.addEventListener("DOMContentLoaded", init);

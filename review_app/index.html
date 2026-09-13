@@ -6,21 +6,57 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="sidebar">
-    <h1>CCNA 200-301</h1>
-    <div id="progress-label" class="page-meta" style="margin-bottom:6px;">Chargement…</div>
-    <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
-    <div id="nav-content"></div>
-  </div>
-  <div id="main">
-    <div id="toolbar">
-      <input type="text" id="search-input" placeholder="Rechercher une question…">
-      <button id="toggle-answers">Afficher toutes les réponses</button>
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-box">
+      <h1>CCNA 200-301 — Révision</h1>
+      <p class="page-meta">Connecte-toi pour que ta progression (questions vues, difficiles, quiz, examens) soit enregistrée de façon permanente sur le serveur — plus de risque de la perdre en vidant le cache du navigateur.</p>
+
+      <div id="auth-tabs">
+        <button type="button" class="auth-tab active" data-tab="login">Se connecter</button>
+        <button type="button" class="auth-tab" data-tab="register">Créer un compte</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <label>Nom d'utilisateur ou email<br><input type="text" id="login-username" required></label>
+        <label>Mot de passe<br><input type="password" id="login-password" required></label>
+        <div id="login-error" class="auth-error hidden"></div>
+        <button type="submit" class="primary">Se connecter</button>
+      </form>
+
+      <form id="register-form" class="auth-form hidden">
+        <label>Nom d'utilisateur<br><input type="text" id="register-username" minlength="3" required></label>
+        <label>Email (optionnel)<br><input type="email" id="register-email"></label>
+        <label>Mot de passe (6 caractères min.)<br><input type="password" id="register-password" minlength="6" required></label>
+        <div id="register-error" class="auth-error hidden"></div>
+        <button type="submit" class="primary">Créer mon compte</button>
+      </form>
     </div>
-    <div id="main-content">
-      <div class="empty-state">Chargement des données…</div>
+  </div>
+
+  <div id="app-root" class="hidden">
+    <div id="sidebar">
+      <h1>CCNA 200-301</h1>
+      <div id="user-bar">
+        <span id="user-name"></span>
+        <button id="account-btn" title="Mon compte">⚙️</button>
+        <button id="logout-btn" title="Se déconnecter">↩️</button>
+      </div>
+      <div id="progress-label" class="page-meta" style="margin-bottom:6px;">Chargement…</div>
+      <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+      <div id="nav-content"></div>
+    </div>
+    <div id="main">
+      <div id="toolbar">
+        <input type="text" id="search-input" placeholder="Rechercher une question…">
+        <button id="toggle-answers">Afficher toutes les réponses</button>
+      </div>
+      <div id="main-content">
+        <div class="empty-state">Chargement des données…</div>
+      </div>
     </div>
   </div>
+
+  <script src="api.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

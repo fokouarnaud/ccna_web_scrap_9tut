@@ -5,8 +5,11 @@ const STORAGE_KEYS = {
   examHistory: "ccna_exam_history_v1",
 };
 
-const EXAM_CATEGORY = "CCNA 200-301";
 const EXAM_PASS_PCT = 82; // rough equivalent of the ~825/1000 passing score mentioned in the CCNA FAQ
+const EXAM_DEFAULT_CATEGORY = "CCNA 200-301";
+const EXAM_SECONDS_PER_QUESTION = 120; // 2 min/question, derived from the 60q/120min real exam pace
+const EXAM_SLOW_FACTOR = 1.5; // a question taking > 1.5x the average time counts as "slow"
+const EXAM_MAX_MINUTES = 120;
 
 const state = {
   pages: [], // all Q&A pages
@@ -111,9 +114,12 @@ function buildSidebar() {
   const flaggedItem = navItem(`⭐ Questions difficiles`, state.flagged.size, () => setView({ type: "flagged" }));
   const quizItem = navItem(`🎯 Mode Quiz`, "", () => setView({ type: "quiz-setup" }));
   const examItem = navItem(`🎓 Mode Examen`, "", () => setView({ type: "exam-setup" }));
+  const difficultCount = state.questions.filter((q) => state.flagged.has(q.id) && q.choices.length && q.answer.length).length;
+  const examDifficultItem = navItem(`🩹 Examen questions difficiles`, difficultCount, () => setView({ type: "exam-setup", difficultOnly: true }));
   specialSection.appendChild(flaggedItem);
   specialSection.appendChild(quizItem);
   specialSection.appendChild(examItem);
+  specialSection.appendChild(examDifficultItem);
   sidebar.appendChild(specialSection);
 
   const byCategory = groupBy(state.pages, (p) => p.category);
@@ -200,7 +206,7 @@ function render() {
   } else if (view.type === "quiz") {
     renderQuiz(main);
   } else if (view.type === "exam-setup") {
-    renderExamSetup(main);
+    renderExamSetup(main, !!view.difficultOnly);
   } else if (view.type === "exam") {
     renderExam(main);
   } else if (view.type === "exam-results") {
@@ -584,10 +590,19 @@ function formatClock(totalSeconds) {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function renderExamSetup(main) {
+function gradableQuestionsOfPage(page) {
+  return page.questions.filter((q) => q.choices && q.choices.length && q.answer && q.answer.length);
+}
+
+function renderExamSetup(main, difficultOnly) {
+  if (difficultOnly) {
+    renderDifficultExamSetup(main);
+    return;
+  }
+
   renderPageHeader(main, "Mode Examen", "Simulation en conditions d'examen : questions chronométrées, réponses et explications masquées jusqu'à la fin.");
 
-  const pool = state.questions.filter((q) => q.category === EXAM_CATEGORY && q.choices.length && q.answer.length);
+  const pagesByCategory = groupBy(state.pages, (p) => p.category);
 
   const form = document.createElement("div");
   form.className = "question-card";
@@ -596,24 +611,143 @@ function renderExamSetup(main) {
     <br><br>
     <label>Durée (minutes)<br><input type="text" id="exam-duration" value="120" style="width:80px"></label>
     <br><br>
-    <label>Sélection des questions<br>
+    <label>Ordre des questions<br>
       <select id="exam-mode">
-        <option value="sequential">Séquentiel (ordre du site, catégorie ${escapeHtml(EXAM_CATEGORY)} — ex. Basic Questions → STP &amp; VTP Questions)</option>
-        <option value="random">Aléatoire (catégorie ${escapeHtml(EXAM_CATEGORY)})</option>
+        <option value="sequential">Séquentiel (dans l'ordre des pages cochées ci-dessous)</option>
+        <option value="random">Aléatoire (parmi les pages cochées ci-dessous)</option>
       </select>
     </label>
-    <br><br>
-    <div class="page-meta">${pool.length} questions disponibles dans la catégorie ${escapeHtml(EXAM_CATEGORY)} (choix multiples uniquement).</div>
-    <br>
-    <button class="primary" id="exam-start">Démarrer l'examen</button>
   `;
   main.appendChild(form);
 
+  const pickerBox = document.createElement("div");
+  pickerBox.className = "question-card";
+  let pickerHtml = `<div class="page-title" style="font-size:16px;margin-bottom:6px;">Pages / catégories à inclure</div>
+    <div class="page-meta" style="margin-bottom:10px;">Coche les pages dont les questions doivent alimenter les 60 (ou N) questions cumulées de l'examen. Fonctionne aussi bien pour la catégorie CCNA 200-301 que pour la Premium Member Zone.</div>`;
+
+  let runningDefaultTotal = 0;
+  const defaultCheckedUrls = new Set();
+
+  for (const [category, pages] of pagesByCategory) {
+    pickerHtml += `
+      <div style="margin:14px 0 6px; display:flex; justify-content:space-between; align-items:center;">
+        <strong>${escapeHtml(category)}</strong>
+        <span>
+          <button type="button" class="exam-select-all" data-cat="${escapeHtml(category)}" style="font-size:12px; padding:4px 8px;">Tout cocher</button>
+          <button type="button" class="exam-select-none" data-cat="${escapeHtml(category)}" style="font-size:12px; padding:4px 8px;">Tout décocher</button>
+        </span>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:4px;">`;
+    for (const page of pages) {
+      const count = gradableQuestionsOfPage(page).length;
+      if (!count) continue;
+      // Default suggestion: pre-check CCNA 200-301 pages in site order until ~60 questions are covered.
+      const isDefaultChecked = category === EXAM_DEFAULT_CATEGORY && runningDefaultTotal < 60;
+      if (isDefaultChecked) {
+        runningDefaultTotal += count;
+        defaultCheckedUrls.add(page.url);
+      }
+      pickerHtml += `
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+          <input type="checkbox" class="exam-page-check" value="${escapeHtml(page.url)}" ${isDefaultChecked ? "checked" : ""}>
+          ${escapeHtml(page.title)} <span class="page-meta">(${count})</span>
+        </label>`;
+    }
+    pickerHtml += `</div>`;
+  }
+  pickerHtml += `<br><div class="page-meta" id="exam-total-selected">0 question(s) sélectionnée(s)</div>`;
+  pickerBox.innerHTML = pickerHtml;
+  main.appendChild(pickerBox);
+
+  function updateSelectedTotal() {
+    const checked = Array.from(pickerBox.querySelectorAll(".exam-page-check:checked")).map((el) => el.value);
+    const total = checked.reduce((sum, url) => {
+      const page = state.pages.find((p) => p.url === url);
+      return sum + (page ? gradableQuestionsOfPage(page).length : 0);
+    }, 0);
+    pickerBox.querySelector("#exam-total-selected").textContent = `${total} question(s) disponible(s) dans la sélection`;
+  }
+
+  pickerBox.addEventListener("change", (e) => {
+    if (e.target.classList.contains("exam-page-check")) updateSelectedTotal();
+  });
+  pickerBox.querySelectorAll(".exam-select-all").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pickerBox.querySelectorAll(`.exam-page-check`).forEach((cb) => {
+        const page = state.pages.find((p) => p.url === cb.value);
+        if (page && page.category === btn.dataset.cat) cb.checked = true;
+      });
+      updateSelectedTotal();
+    });
+  });
+  pickerBox.querySelectorAll(".exam-select-none").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pickerBox.querySelectorAll(`.exam-page-check`).forEach((cb) => {
+        const page = state.pages.find((p) => p.url === cb.value);
+        if (page && page.category === btn.dataset.cat) cb.checked = false;
+      });
+      updateSelectedTotal();
+    });
+  });
+  updateSelectedTotal();
+
+  const startBox = document.createElement("div");
+  startBox.className = "question-card";
+  startBox.innerHTML = `<button class="primary" id="exam-start">Démarrer l'examen</button>`;
+  main.appendChild(startBox);
+
   document.getElementById("exam-start").addEventListener("click", () => {
+    const checkedUrls = Array.from(pickerBox.querySelectorAll(".exam-page-check:checked")).map((el) => el.value);
+    if (!checkedUrls.length) {
+      alert("Coche au moins une page pour démarrer l'examen.");
+      return;
+    }
+    const checkedSet = new Set(checkedUrls);
+    const orderedPages = state.pages.filter((p) => checkedSet.has(p.url));
+    const pool = state.questions.filter((q) => checkedSet.has(q.pageUrl) && q.choices.length && q.answer.length);
+
     const count = Math.max(1, parseInt(document.getElementById("exam-count").value, 10) || 60);
     const durationMin = Math.max(1, parseInt(document.getElementById("exam-duration").value, 10) || 120);
     const mode = document.getElementById("exam-mode").value;
-    startExam(mode, count, durationMin, pool);
+    const label = orderedPages.length === 1 ? orderedPages[0].title : `Personnalisé (${orderedPages.length} page${orderedPages.length > 1 ? "s" : ""})`;
+    startExam({ mode, count, durationMin, pool, label });
+  });
+
+  renderExamHistoryTable(main);
+}
+
+function renderDifficultExamSetup(main) {
+  renderPageHeader(main, "Examen spécial — Questions difficiles", "Ré-affronte uniquement les questions marquées difficiles (⭐), avec une durée adaptée au nombre de questions, plafonnée à 2h.");
+
+  const pool = state.questions.filter((q) => state.flagged.has(q.id) && q.choices.length && q.answer.length);
+  const count = pool.length;
+  const durationMin = count ? Math.min(EXAM_MAX_MINUTES, Math.max(5, Math.round((count * EXAM_SECONDS_PER_QUESTION) / 60))) : 0;
+
+  const box = document.createElement("div");
+  box.className = "question-card";
+  if (!count) {
+    box.innerHTML = `<div class="empty-state">Aucune question marquée difficile pour le moment. Marque des questions avec ☆ (ou depuis les résultats d'un examen) pour alimenter cet examen spécial.</div>`;
+    main.appendChild(box);
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="page-meta">${count} question(s) difficile(s) disponibles.</div>
+    <div class="page-meta">Durée calculée : ${durationMin} minute(s) (≈${Math.round(EXAM_SECONDS_PER_QUESTION / 60)} min/question, plafonné à ${EXAM_MAX_MINUTES} min).</div>
+    <br>
+    <button class="primary" id="exam-difficult-start">Démarrer l'examen spécial</button>
+  `;
+  main.appendChild(box);
+
+  document.getElementById("exam-difficult-start").addEventListener("click", () => {
+    startExam({
+      mode: "random",
+      count,
+      durationMin,
+      pool,
+      label: "Questions difficiles",
+      isDifficultReview: true,
+    });
   });
 
   renderExamHistoryTable(main);
@@ -633,7 +767,7 @@ function renderExamHistoryTable(main) {
       const passed = pct >= EXAM_PASS_PCT;
       return `<tr>
         <td>${escapeHtml(date)}</td>
-        <td>${h.mode === "sequential" ? "Séquentiel" : "Aléatoire"}</td>
+        <td>${escapeHtml(h.label || (h.mode === "sequential" ? "Séquentiel" : "Aléatoire"))}</td>
         <td>${h.score} / ${h.total} (${pct}%)</td>
         <td>${formatClock(h.durationSeconds)} / ${formatClock(h.timeLimitSeconds)}</td>
         <td style="color:${passed ? "var(--good)" : "var(--bad)"}">${passed ? "Objectif atteint" : "En dessous de l'objectif"}</td>
@@ -646,7 +780,7 @@ function renderExamHistoryTable(main) {
     <div style="overflow-x:auto;">
       <table style="width:100%; border-collapse: collapse; font-size:13px;">
         <thead><tr style="text-align:left; color: var(--muted);">
-          <th>Date</th><th>Mode</th><th>Score</th><th>Temps</th><th>Résultat</th>
+          <th>Date</th><th>Portée</th><th>Score</th><th>Temps</th><th>Résultat</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -655,18 +789,23 @@ function renderExamHistoryTable(main) {
   main.appendChild(box);
 }
 
-function startExam(mode, count, durationMin, pool) {
+function startExam({ mode, count, durationMin, pool, label, isDifficultReview }) {
   let selected;
   if (mode === "random") {
     selected = shuffle([...pool]).slice(0, count);
   } else {
-    selected = pool.slice(0, count); // pool is already in site order (Basic Questions → ... → Miscellaneous)
+    selected = pool.slice(0, count); // pool is already in the order of the checked pages
   }
 
   state.exam = {
     mode,
+    label: label || "Personnalisé",
+    isDifficultReview: !!isDifficultReview,
     questions: selected,
     answers: {}, // questionId -> array of selected letters
+    timings: {}, // questionId -> seconds spent
+    currentQid: selected.length ? selected[0].id : null,
+    currentStartedAt: Date.now(),
     index: 0,
     timeLimitSeconds: durationMin * 60,
     remainingSeconds: durationMin * 60,
@@ -680,6 +819,24 @@ function startExam(mode, count, durationMin, pool) {
   setView({ type: "exam" });
 }
 
+function commitCurrentExamTime() {
+  const exam = state.exam;
+  if (!exam || !exam.currentQid) return;
+  const now = Date.now();
+  const elapsed = (now - exam.currentStartedAt) / 1000;
+  exam.timings[exam.currentQid] = (exam.timings[exam.currentQid] || 0) + elapsed;
+  exam.currentStartedAt = now;
+}
+
+function goToExamQuestion(newIndex) {
+  const exam = state.exam;
+  if (!exam) return;
+  commitCurrentExamTime();
+  exam.index = newIndex;
+  exam.currentQid = exam.questions[newIndex].id;
+  render();
+}
+
 function tickExamTimer() {
   const exam = state.exam;
   if (!exam || exam.finished) return;
@@ -691,6 +848,13 @@ function tickExamTimer() {
     timerEl.classList.toggle("bad", exam.remainingSeconds <= 300);
   }
 
+  const qTimeEl = document.getElementById("exam-current-qtime");
+  if (qTimeEl && exam.currentQid) {
+    const already = exam.timings[exam.currentQid] || 0;
+    const liveElapsed = (Date.now() - exam.currentStartedAt) / 1000;
+    qTimeEl.textContent = `Temps sur cette question : ${formatClock(already + liveElapsed)}`;
+  }
+
   if (exam.remainingSeconds <= 0) {
     finishExam(true);
   }
@@ -699,6 +863,8 @@ function tickExamTimer() {
 function finishExam(timedOut) {
   const exam = state.exam;
   if (!exam || exam.finished) return;
+
+  commitCurrentExamTime();
 
   if (state.examTimerHandle) {
     clearInterval(state.examTimerHandle);
@@ -710,18 +876,31 @@ function finishExam(timedOut) {
   exam.durationSeconds = exam.timeLimitSeconds - Math.max(0, exam.remainingSeconds);
 
   let score = 0;
+  let flaggedChanged = false;
   for (const q of exam.questions) {
     markSeen(q.id);
     const given = new Set(exam.answers[q.id] || []);
     const correctSet = new Set(q.answer);
     const isCorrect = given.size > 0 && correctSet.size === given.size && [...given].every((l) => correctSet.has(l));
     if (isCorrect) score += 1;
+
+    // In the special "difficult questions" exam, a correct answer means the
+    // question is mastered — take it out of the to-review pool.
+    if (exam.isDifficultReview && isCorrect && state.flagged.has(q.id)) {
+      state.flagged.delete(q.id);
+      flaggedChanged = true;
+    }
   }
   exam.score = score;
+  if (flaggedChanged) {
+    saveSet(STORAGE_KEYS.flagged, state.flagged);
+    updateSidebarCounts();
+  }
 
   state.examHistory.push({
     date: new Date().toISOString(),
     mode: exam.mode,
+    label: exam.label,
     score,
     total: exam.questions.length,
     durationSeconds: exam.durationSeconds,
@@ -759,6 +938,13 @@ function renderExam(main) {
   timerRow.innerHTML = `Temps restant : <span id="exam-timer" class="${exam.remainingSeconds <= 300 ? "bad" : ""}">${formatClock(exam.remainingSeconds)}</span>`;
   main.appendChild(timerRow);
 
+  const qTimeRow = document.createElement("div");
+  qTimeRow.className = "page-meta";
+  qTimeRow.id = "exam-current-qtime";
+  qTimeRow.style.marginBottom = "10px";
+  qTimeRow.textContent = `Temps sur cette question : ${formatClock(exam.timings[q.id] || 0)}`;
+  main.appendChild(qTimeRow);
+
   const palette = document.createElement("div");
   palette.style.display = "flex";
   palette.style.flexWrap = "wrap";
@@ -772,10 +958,7 @@ function renderExam(main) {
     btn.style.padding = "4px 0";
     if (i === exam.index) btn.classList.add("primary");
     else if (isAnswered) btn.style.borderColor = "var(--good)";
-    btn.addEventListener("click", () => {
-      exam.index = i;
-      render();
-    });
+    btn.addEventListener("click", () => goToExamQuestion(i));
     palette.appendChild(btn);
   });
   main.appendChild(palette);
@@ -832,19 +1015,13 @@ function renderExam(main) {
   const prevBtn = document.createElement("button");
   prevBtn.textContent = "← Précédent";
   prevBtn.disabled = exam.index === 0;
-  prevBtn.addEventListener("click", () => {
-    exam.index = Math.max(0, exam.index - 1);
-    render();
-  });
+  prevBtn.addEventListener("click", () => goToExamQuestion(Math.max(0, exam.index - 1)));
   navRow.appendChild(prevBtn);
 
   if (exam.index < exam.questions.length - 1) {
     const nextBtn = document.createElement("button");
     nextBtn.textContent = "Suivant →";
-    nextBtn.addEventListener("click", () => {
-      exam.index += 1;
-      render();
-    });
+    nextBtn.addEventListener("click", () => goToExamQuestion(exam.index + 1));
     navRow.appendChild(nextBtn);
   }
 
@@ -871,7 +1048,7 @@ function renderExamResults(main) {
   const pct = exam.questions.length ? Math.round((100 * exam.score) / exam.questions.length) : 0;
   const passed = pct >= EXAM_PASS_PCT;
 
-  renderPageHeader(main, "Résultats de l'examen", exam.timedOut ? "Temps écoulé — examen soumis automatiquement." : "");
+  renderPageHeader(main, "Résultats de l'examen", `${escapeHtml(exam.label || "")}${exam.timedOut ? " — Temps écoulé, examen soumis automatiquement." : ""}`);
 
   const summary = document.createElement("div");
   summary.className = "question-card";
@@ -881,7 +1058,8 @@ function renderExamResults(main) {
     <div class="page-meta">Temps utilisé : ${formatClock(exam.durationSeconds)} / ${formatClock(exam.timeLimitSeconds)}</div>
     <br>
     <button class="primary" id="exam-again">Nouvel examen</button>
-    <button id="exam-flag-missed">★ Marquer toutes les questions ratées comme difficiles</button>
+    <button id="exam-flag-missed">★ Marquer les questions ratées comme difficiles</button>
+    <button id="exam-flag-slow">⏱ Marquer les questions lentes comme difficiles</button>
   `;
   main.appendChild(summary);
 
@@ -890,11 +1068,12 @@ function renderExamResults(main) {
     setView({ type: "exam-setup" });
   });
 
-  const missed = exam.questions.filter((q) => {
+  const isCorrectQ = (q) => {
     const given = new Set(exam.answers[q.id] || []);
     const correctSet = new Set(q.answer);
-    return !(given.size > 0 && correctSet.size === given.size && [...given].every((l) => correctSet.has(l)));
-  });
+    return given.size > 0 && correctSet.size === given.size && [...given].every((l) => correctSet.has(l));
+  };
+  const missed = exam.questions.filter((q) => !isCorrectQ(q));
 
   document.getElementById("exam-flag-missed").addEventListener("click", () => {
     for (const q of missed) state.flagged.add(q.id);
@@ -902,6 +1081,45 @@ function renderExamResults(main) {
     updateSidebarCounts();
     render();
   });
+
+  // --- Time analysis ---
+  const timedQuestions = exam.questions
+    .map((q) => ({ q, time: exam.timings[q.id] || 0 }))
+    .filter((e) => e.time > 0);
+  const avgTime = timedQuestions.length ? timedQuestions.reduce((s, e) => s + e.time, 0) / timedQuestions.length : 0;
+  const slowThreshold = avgTime * EXAM_SLOW_FACTOR;
+  const slowest = [...timedQuestions].sort((a, b) => b.time - a.time).slice(0, 10);
+  const slowQuestions = timedQuestions.filter((e) => e.time > slowThreshold).map((e) => e.q);
+
+  document.getElementById("exam-flag-slow").addEventListener("click", () => {
+    for (const q of slowQuestions) state.flagged.add(q.id);
+    saveSet(STORAGE_KEYS.flagged, state.flagged);
+    updateSidebarCounts();
+    render();
+  });
+
+  const timeBox = document.createElement("div");
+  timeBox.className = "question-card";
+  const rows = slowest
+    .map(
+      ({ q, time }) => `<tr${time > slowThreshold ? ' style="color: var(--warn)"' : ""}>
+        <td>Q${q.number} — ${escapeHtml(q.pageTitle)}</td>
+        <td>${formatClock(time)}</td>
+        <td>${isCorrectQ(q) ? "✓" : "✗"}</td>
+      </tr>`
+    )
+    .join("");
+  timeBox.innerHTML = `
+    <div class="page-title" style="font-size:16px;margin-bottom:6px;">⏱ Analyse du temps</div>
+    <div class="page-meta" style="margin-bottom:10px;">Temps moyen par question répondue : ${formatClock(avgTime)}. Questions les plus lentes (candidates à accélérer) :</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse: collapse; font-size:13px;">
+        <thead><tr style="text-align:left; color: var(--muted);"><th>Question</th><th>Temps</th><th>Correct</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="3">Pas de données de temps (examen terminé sans visiter de question).</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+  main.appendChild(timeBox);
 
   const missedHeader = document.createElement("div");
   missedHeader.className = "page-title";
@@ -914,14 +1132,14 @@ function renderExamResults(main) {
     main.innerHTML += `<div class="empty-state">Aucune erreur — excellent travail !</div>`;
   } else {
     for (const q of missed) {
-      main.appendChild(renderMissedQuestionCard(q, exam.answers[q.id] || []));
+      main.appendChild(renderExamReviewCard(q, exam.answers[q.id] || [], exam.timings[q.id] || 0));
     }
   }
 
   renderExamHistoryTable(main);
 }
 
-function renderMissedQuestionCard(q, givenLetters) {
+function renderExamReviewCard(q, givenLetters, timeSeconds) {
   const card = document.createElement("div");
   card.className = "question-card";
 
@@ -929,7 +1147,7 @@ function renderMissedQuestionCard(q, givenLetters) {
   const head = document.createElement("div");
   head.className = "question-head";
   head.innerHTML = `
-    <span class="question-number">Question ${q.number} — ${escapeHtml(q.pageTitle)}</span>
+    <span class="question-number">Question ${q.number} — ${escapeHtml(q.pageTitle)} · ${formatClock(timeSeconds || 0)}</span>
     <button class="flag-btn ${isFlagged ? "flagged" : ""}">${isFlagged ? "★" : "☆"}</button>
   `;
   head.querySelector(".flag-btn").addEventListener("click", () => {

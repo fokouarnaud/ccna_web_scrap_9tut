@@ -80,6 +80,11 @@ Charge `data/ccna_questions.json` et `data/lab_sims.json` dans `data/app.db` (SQ
 - Les écritures sont des **upserts** (`INSERT ... ON CONFLICT DO UPDATE`) sur la clé naturelle (URL de la page, ou `page_url + numéro` pour une question) : relancer l'import plusieurs fois ne duplique jamais rien.
 - Même politique pour l'API (chaque requête qui écrit plusieurs lignes — ex. enregistrer un examen complet avec le détail par question — le fait dans une transaction unique).
 - Sauvegarde manuelle recommandée avant une session d'examen importante : `sqlite3 data/app.db ".backup data/app.db.bak"` (copie cohérente même si l'app tourne).
+- **Chemin de la base toujours absolu** (`server/db.py`) : `DB_PATH` est calculé via `Path(__file__).resolve()`, donc absolu quel que soit le répertoire de travail (`cwd`) au démarrage du processus — jamais un chemin relatif du style `sqlite:///ma_base.db`. Nécessaire sur un hébergeur comme **PythonAnywhere**, où le process WSGI ne démarre pas forcément avec le dossier du projet comme `cwd`. Pour forcer un chemin précis (ex. sur PythonAnywhere), définis `CCNA_DB_PATH` dans `.env` :
+  ```
+  CCNA_DB_PATH=/home/ton_utilisateur_pythonanywhere/ccna_web_scrap_9tut/data/app.db
+  ```
+  (toute valeur fournie est elle-même normalisée en chemin absolu par sécurité).
 
 ## Phase 3 — Utilisation (App de révision + comptes)
 
@@ -113,6 +118,80 @@ Mot de passe stocké en PBKDF2-HMAC-SHA256 (200 000 itérations, sel aléatoire 
 - **🩹 Examen spécial "questions difficiles"** : reprend uniquement les questions marquées ⭐, avec une durée calculée automatiquement selon leur nombre (≈2 min/question) et plafonnée à 2h. Toute question répondue correctement y est automatiquement retirée de la liste "difficiles" (maîtrisée) ; les questions encore ratées ou lentes y restent/y sont ajoutées — un cycle de révision qui se réduit au fil des tentatives.
 - Suivi de progression (questions vues) et statistiques de quiz — tout est désormais stocké côté serveur (base SQLite), par compte.
 
+## Déploiement sur PythonAnywhere
+
+Le scraping (Phase 1, Playwright/Chromium) se fait **en local** — PythonAnywhere ne sert qu'à héberger l'app Flask + la base SQLite déjà remplie. Procédure complète, dans l'ordre :
+
+### A. En local, avant de déployer
+
+1. Termine les Phases 1 et 2 en local (`python -m scraper.run`, puis `python -m server.import_data`) pour avoir `data/ccna_questions.json`, `data/lab_sims.json` et `data/app.db` à jour.
+2. Pousse le code sur un dépôt Git accessible depuis PythonAnywhere (GitHub, GitLab…), **ou** prévois d'uploader une archive zip via l'onglet **Files**. `data/app.db` étant listé dans `.gitignore`, transfère-le séparément (voir étape B.3) si tu veux partir avec les données déjà importées plutôt que ré-importer sur PythonAnywhere.
+
+### B. Sur PythonAnywhere
+
+1. **Récupérer le code** — ouvre une console **Bash** (onglet **Consoles**) :
+   ```bash
+   git clone <url-de-ton-repo> ccna_web_scrap_9tut
+   ```
+   (sans dépôt Git : upload un zip via l'onglet **Files**, puis `unzip mon_projet.zip` en console Bash).
+
+2. **Uploader les données** si elles ne sont pas dans Git : onglet **Files** → navigue jusqu'à `ccna_web_scrap_9tut/data/` → upload `ccna_questions.json`, `lab_sims.json` (et `app.db` si tu veux éviter l'étape B.5).
+
+3. **Créer un virtualenv dédié** (toujours en console Bash) :
+   ```bash
+   mkvirtualenv --python=python3.10 ccna-venv
+   ```
+   (`mkvirtualenv` place l'environnement dans `~/.virtualenvs/ccna-venv` ; adapte la version Python à ce que propose ton compte). S'il est déjà créé une prochaine fois : `workon ccna-venv` pour l'activer.
+
+4. **Installer les dépendances côté serveur** (pas besoin de Playwright/BeautifulSoup ici, seulement Flask) :
+   ```bash
+   cd ccna_web_scrap_9tut
+   pip install -r requirements-server.txt
+   ```
+
+5. **Importer les données en base** (si `data/app.db` n'a pas été uploadé directement à l'étape B.2) :
+   ```bash
+   python -m server.import_data
+   ```
+
+6. **Créer l'app web** : onglet **Web** → **Add a new web app** → choisis **Manual configuration** (pas le template "Flask" automatique — l'app de ce projet vit dans `server/app.py`, pas dans un `app.py` à la racine) → même version Python que le virtualenv.
+
+7. **Configurer le virtualenv** : toujours onglet **Web**, section **Virtualenv**, indique :
+   ```
+   /home/<ton_utilisateur>/.virtualenvs/ccna-venv
+   ```
+
+8. **Configurer le fichier WSGI** : section **Code** → clique le lien bleu se terminant par `_wsgi.py` → efface tout le contenu existant → colle (en adaptant `<ton_utilisateur>` et le nom du dossier si différent) :
+
+   ```python
+   import sys
+
+   # Dossier racine du projet (celui qui contient le package "server")
+   path = '/home/<ton_utilisateur>/ccna_web_scrap_9tut'
+   if path not in sys.path:
+       sys.path.insert(0, path)
+
+   # server/app.py définit "app = Flask(__name__)" — importé sous le nom
+   # attendu par PythonAnywhere : "application"
+   from server.app import app as application
+   ```
+
+   Sauvegarde (Ctrl+S ou le bouton Save de l'éditeur).
+
+9. **Reload** : retourne sur l'onglet **Web**, clique le gros bouton vert **Reload**.
+
+10. **Vérifier** : ouvre l'URL indiquée en haut de l'onglet Web (`https://<ton_utilisateur>.pythonanywhere.com`) — l'écran de connexion/inscription doit apparaître. Crée un compte de test, vérifie que les questions s'affichent. En cas d'erreur, l'onglet Web affiche un lien **Error log** avec la trace complète.
+
+### C. Notes
+
+- **Chemin de la base toujours absolu** (`server/db.py`) : `DB_PATH` est calculé via `Path(__file__).resolve()`, donc absolu quel que soit le `cwd` au démarrage du process — jamais un chemin relatif du style `sqlite:///ma_base.db`. Pour forcer un chemin précis, définis `CCNA_DB_PATH` dans un `.env` à la racine du projet :
+  ```
+  CCNA_DB_PATH=/home/<ton_utilisateur>/ccna_web_scrap_9tut/data/app.db
+  ```
+- `server/app.py` appelle `db.init_db()` dès son import (pas seulement au lancement local via `python -m server.app`) : la première requête sur l'app WSGI crée le schéma s'il n'existe pas déjà — pas de migration manuelle nécessaire après l'étape B.5.
+- **Mettre à jour le contenu plus tard** (nouveau scraping) : en local, `python -m scraper.run` puis `python -m server.import_data` ; ré-upload `data/ccna_questions.json` et `data/lab_sims.json` (onglet Files) ; sur PythonAnywhere, `python -m server.import_data` dans une console Bash (dans le venv `ccna-venv`) ; puis **Reload** sur l'onglet Web.
+- **Compte gratuit** : quota de CPU-secondes et l'app se met en pause après 3 mois d'inactivité (bouton "Run until 3 months from today" sur l'onglet Web pour la relancer) — sans impact sur le fonctionnement de l'app elle-même.
+
 ## Structure du projet
 
 ```
@@ -127,4 +206,6 @@ review_app/     frontend (HTML/CSS/JS), consomme l'API via api.js
 data/
   ccna_questions.json, lab_sims.json   sortie brute du scraper
   app.db        base SQLite (contenu + comptes + progression) — source de vérité à l'exécution
+requirements.txt          dépendances complètes (scraping + serveur) — usage local
+requirements-server.txt   dépendances minimales (Flask + python-dotenv) — usage hébergement (PythonAnywhere)
 ```

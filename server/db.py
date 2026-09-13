@@ -1,8 +1,23 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "app.db"
+from dotenv import load_dotenv
+
+_ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(_ROOT_DIR / ".env")
+
+# Always an ABSOLUTE path, never a bare relative string like "sqlite:///ma_base.db".
+# Path(__file__).resolve() already makes this absolute regardless of the current
+# working directory the process was started from — required on hosts like
+# PythonAnywhere, where the WSGI process's CWD is not guaranteed to be the
+# project root. CCNA_DB_PATH (settable in .env) lets a deployment override the
+# location (e.g. PythonAnywhere's /home/<user>/<project>/data/app.db) without
+# editing code; any value supplied is itself resolved to an absolute path as a
+# safety net.
+_DEFAULT_DB_PATH = _ROOT_DIR / "data" / "app.db"
+DB_PATH = Path(os.environ.get("CCNA_DB_PATH", _DEFAULT_DB_PATH)).resolve()
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 

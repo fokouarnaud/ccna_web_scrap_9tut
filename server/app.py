@@ -16,6 +16,11 @@ SESSION_LIFETIME_DAYS = 30
 
 app = Flask(__name__)
 
+# Runs on import (not just via main()) so the schema self-creates the moment a
+# WSGI server (e.g. PythonAnywhere) imports this module directly — CREATE
+# TABLE IF NOT EXISTS is idempotent, so this is a no-op once the DB exists.
+db.init_db()
+
 
 def utcnow_iso() -> str:
     return datetime.utcnow().isoformat()
@@ -391,7 +396,6 @@ def record_exam():
 
 
 def main():
-    db.init_db()
     app.run(host="127.0.0.1", port=8090, debug=False)
 
 

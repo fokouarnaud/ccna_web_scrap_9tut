@@ -1,0 +1,5 @@
+.env
+scraper/.auth_state.json
+.playwright-mcp/
+__pycache__/
+*.pyc

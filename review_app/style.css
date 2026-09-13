@@ -241,6 +241,20 @@ input[type="text"] { cursor: text; min-width: 200px; }
   margin-bottom: 16px;
 }
 
+#exam-timer {
+  font-weight: 700;
+  font-family: monospace;
+  font-size: 16px;
+}
+#exam-timer.bad { color: var(--bad); }
+
+.exam-nav {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 @media (max-width: 800px) {
   body { flex-direction: column; }
   #sidebar { width: 100%; height: auto; position: static; }

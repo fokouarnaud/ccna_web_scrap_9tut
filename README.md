@@ -84,4 +84,5 @@ Fonctionnalités :
 - Réponses cachées par défaut, révélées question par question ou toutes en même temps.
 - Marquage "question difficile" (⭐) persistant, avec vue "Révision" dédiée.
 - Mode Quiz (choix aléatoire, portée par catégorie/page/questions difficiles, score final).
+- **Mode Examen** : simulation en conditions réelles — N questions (60 par défaut) chronométrées (120 min par défaut), tirées de la catégorie CCNA 200-301 soit dans l'ordre du site (ex. Basic Questions → STP & VTP Questions pour les 60 premières), soit aléatoirement. Réponses et explications restent masquées pendant l'examen ; navigation libre entre questions via une palette de numéros. À la fin (ou au temps écoulé) : score, temps utilisé, liste des questions ratées avec la page source (lien interne + référence externe si disponible) et l'explication, possibilité de marquer en masse les questions ratées comme "difficiles", et historique des tentatives pour suivre la progression (score et temps) dans le temps.
 - Suivi de progression (questions vues) et statistiques de quiz, stockés en local (`localStorage`).

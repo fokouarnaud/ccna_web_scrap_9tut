@@ -2,7 +2,11 @@ const STORAGE_KEYS = {
   flagged: "ccna_flagged_v1",
   seen: "ccna_seen_v1",
   quizStats: "ccna_quiz_stats_v1",
+  examHistory: "ccna_exam_history_v1",
 };
+
+const EXAM_CATEGORY = "CCNA 200-301";
+const EXAM_PASS_PCT = 82; // rough equivalent of the ~825/1000 passing score mentioned in the CCNA FAQ
 
 const state = {
   pages: [], // all Q&A pages
@@ -11,9 +15,12 @@ const state = {
   flagged: new Set(),
   seen: new Set(),
   quizStats: {}, // category -> {correct, total}
-  currentView: { type: "page", pageUrl: null }, // page | flagged | quiz | generic
+  examHistory: [], // past exam attempts
+  currentView: { type: "page", pageUrl: null }, // page | flagged | quiz | generic | exam-setup | exam | exam-results
   globalAnswersHidden: true,
   quiz: null, // active quiz session state
+  exam: null, // active/finished exam session state
+  examTimerHandle: null,
 };
 
 function loadSet(key) {
@@ -45,6 +52,23 @@ function loadStats() {
 function saveStats() {
   try {
     localStorage.setItem(STORAGE_KEYS.quizStats, JSON.stringify(state.quizStats));
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function loadExamHistory() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.examHistory);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveExamHistory() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.examHistory, JSON.stringify(state.examHistory));
   } catch (e) {
     /* ignore */
   }
@@ -86,8 +110,10 @@ function buildSidebar() {
   specialSection.innerHTML = `<h2>Révision</h2>`;
   const flaggedItem = navItem(`⭐ Questions difficiles`, state.flagged.size, () => setView({ type: "flagged" }));
   const quizItem = navItem(`🎯 Mode Quiz`, "", () => setView({ type: "quiz-setup" }));
+  const examItem = navItem(`🎓 Mode Examen`, "", () => setView({ type: "exam-setup" }));
   specialSection.appendChild(flaggedItem);
   specialSection.appendChild(quizItem);
+  specialSection.appendChild(examItem);
   sidebar.appendChild(specialSection);
 
   const byCategory = groupBy(state.pages, (p) => p.category);
@@ -173,6 +199,12 @@ function render() {
     renderQuizSetup(main);
   } else if (view.type === "quiz") {
     renderQuiz(main);
+  } else if (view.type === "exam-setup") {
+    renderExamSetup(main);
+  } else if (view.type === "exam") {
+    renderExam(main);
+  } else if (view.type === "exam-results") {
+    renderExamResults(main);
   } else {
     main.innerHTML = `<div class="empty-state">Sélectionne une catégorie dans le menu.</div>`;
   }
@@ -542,6 +574,413 @@ function renderQuizResults(main) {
   document.getElementById("quiz-again").addEventListener("click", () => setView({ type: "quiz-setup" }));
 }
 
+function formatClock(totalSeconds) {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function renderExamSetup(main) {
+  renderPageHeader(main, "Mode Examen", "Simulation en conditions d'examen : questions chronométrées, réponses et explications masquées jusqu'à la fin.");
+
+  const pool = state.questions.filter((q) => q.category === EXAM_CATEGORY && q.choices.length && q.answer.length);
+
+  const form = document.createElement("div");
+  form.className = "question-card";
+  form.innerHTML = `
+    <label>Nombre de questions<br><input type="text" id="exam-count" value="60" style="width:80px"></label>
+    <br><br>
+    <label>Durée (minutes)<br><input type="text" id="exam-duration" value="120" style="width:80px"></label>
+    <br><br>
+    <label>Sélection des questions<br>
+      <select id="exam-mode">
+        <option value="sequential">Séquentiel (ordre du site, catégorie ${escapeHtml(EXAM_CATEGORY)} — ex. Basic Questions → STP &amp; VTP Questions)</option>
+        <option value="random">Aléatoire (catégorie ${escapeHtml(EXAM_CATEGORY)})</option>
+      </select>
+    </label>
+    <br><br>
+    <div class="page-meta">${pool.length} questions disponibles dans la catégorie ${escapeHtml(EXAM_CATEGORY)} (choix multiples uniquement).</div>
+    <br>
+    <button class="primary" id="exam-start">Démarrer l'examen</button>
+  `;
+  main.appendChild(form);
+
+  document.getElementById("exam-start").addEventListener("click", () => {
+    const count = Math.max(1, parseInt(document.getElementById("exam-count").value, 10) || 60);
+    const durationMin = Math.max(1, parseInt(document.getElementById("exam-duration").value, 10) || 120);
+    const mode = document.getElementById("exam-mode").value;
+    startExam(mode, count, durationMin, pool);
+  });
+
+  renderExamHistoryTable(main);
+}
+
+function renderExamHistoryTable(main) {
+  if (!state.examHistory.length) return;
+
+  const box = document.createElement("div");
+  box.className = "question-card";
+  const rows = [...state.examHistory]
+    .reverse()
+    .slice(0, 15)
+    .map((h) => {
+      const pct = h.total ? Math.round((100 * h.score) / h.total) : 0;
+      const date = new Date(h.date).toLocaleString();
+      const passed = pct >= EXAM_PASS_PCT;
+      return `<tr>
+        <td>${escapeHtml(date)}</td>
+        <td>${h.mode === "sequential" ? "Séquentiel" : "Aléatoire"}</td>
+        <td>${h.score} / ${h.total} (${pct}%)</td>
+        <td>${formatClock(h.durationSeconds)} / ${formatClock(h.timeLimitSeconds)}</td>
+        <td style="color:${passed ? "var(--good)" : "var(--bad)"}">${passed ? "Objectif atteint" : "En dessous de l'objectif"}</td>
+      </tr>`;
+    })
+    .join("");
+
+  box.innerHTML = `
+    <div class="page-title" style="font-size:16px;margin-bottom:10px;">Historique des examens</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse: collapse; font-size:13px;">
+        <thead><tr style="text-align:left; color: var(--muted);">
+          <th>Date</th><th>Mode</th><th>Score</th><th>Temps</th><th>Résultat</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+  main.appendChild(box);
+}
+
+function startExam(mode, count, durationMin, pool) {
+  let selected;
+  if (mode === "random") {
+    selected = shuffle([...pool]).slice(0, count);
+  } else {
+    selected = pool.slice(0, count); // pool is already in site order (Basic Questions → ... → Miscellaneous)
+  }
+
+  state.exam = {
+    mode,
+    questions: selected,
+    answers: {}, // questionId -> array of selected letters
+    index: 0,
+    timeLimitSeconds: durationMin * 60,
+    remainingSeconds: durationMin * 60,
+    startedAt: Date.now(),
+    finished: false,
+  };
+
+  if (state.examTimerHandle) clearInterval(state.examTimerHandle);
+  state.examTimerHandle = setInterval(tickExamTimer, 1000);
+
+  setView({ type: "exam" });
+}
+
+function tickExamTimer() {
+  const exam = state.exam;
+  if (!exam || exam.finished) return;
+  exam.remainingSeconds -= 1;
+
+  const timerEl = document.getElementById("exam-timer");
+  if (timerEl) {
+    timerEl.textContent = formatClock(exam.remainingSeconds);
+    timerEl.classList.toggle("bad", exam.remainingSeconds <= 300);
+  }
+
+  if (exam.remainingSeconds <= 0) {
+    finishExam(true);
+  }
+}
+
+function finishExam(timedOut) {
+  const exam = state.exam;
+  if (!exam || exam.finished) return;
+
+  if (state.examTimerHandle) {
+    clearInterval(state.examTimerHandle);
+    state.examTimerHandle = null;
+  }
+
+  exam.finished = true;
+  exam.timedOut = !!timedOut;
+  exam.durationSeconds = exam.timeLimitSeconds - Math.max(0, exam.remainingSeconds);
+
+  let score = 0;
+  for (const q of exam.questions) {
+    markSeen(q.id);
+    const given = new Set(exam.answers[q.id] || []);
+    const correctSet = new Set(q.answer);
+    const isCorrect = given.size > 0 && correctSet.size === given.size && [...given].every((l) => correctSet.has(l));
+    if (isCorrect) score += 1;
+  }
+  exam.score = score;
+
+  state.examHistory.push({
+    date: new Date().toISOString(),
+    mode: exam.mode,
+    score,
+    total: exam.questions.length,
+    durationSeconds: exam.durationSeconds,
+    timeLimitSeconds: exam.timeLimitSeconds,
+    timedOut: exam.timedOut,
+  });
+  saveExamHistory();
+
+  setView({ type: "exam-results" });
+}
+
+function renderExam(main) {
+  const exam = state.exam;
+  if (!exam || !exam.questions.length) {
+    main.innerHTML = `<div class="empty-state">Aucun examen en cours. Configure un nouvel examen depuis "🎓 Mode Examen".</div>`;
+    return;
+  }
+  if (exam.finished) {
+    renderExamResults(main);
+    return;
+  }
+
+  const q = exam.questions[exam.index];
+  const answeredCount = Object.keys(exam.answers).filter((id) => exam.answers[id] && exam.answers[id].length).length;
+
+  const header = document.createElement("div");
+  header.innerHTML = `
+    <div class="page-title">Mode Examen — Question ${exam.index + 1} / ${exam.questions.length}</div>
+    <div class="page-meta">Répondues : ${answeredCount} / ${exam.questions.length}</div>
+  `;
+  main.appendChild(header);
+
+  const timerRow = document.createElement("div");
+  timerRow.className = "quiz-score";
+  timerRow.innerHTML = `Temps restant : <span id="exam-timer" class="${exam.remainingSeconds <= 300 ? "bad" : ""}">${formatClock(exam.remainingSeconds)}</span>`;
+  main.appendChild(timerRow);
+
+  const palette = document.createElement("div");
+  palette.style.display = "flex";
+  palette.style.flexWrap = "wrap";
+  palette.style.gap = "4px";
+  palette.style.margin = "10px 0 16px";
+  exam.questions.forEach((pq, i) => {
+    const btn = document.createElement("button");
+    const isAnswered = exam.answers[pq.id] && exam.answers[pq.id].length;
+    btn.textContent = i + 1;
+    btn.style.width = "34px";
+    btn.style.padding = "4px 0";
+    if (i === exam.index) btn.classList.add("primary");
+    else if (isAnswered) btn.style.borderColor = "var(--good)";
+    btn.addEventListener("click", () => {
+      exam.index = i;
+      render();
+    });
+    palette.appendChild(btn);
+  });
+  main.appendChild(palette);
+
+  const card = document.createElement("div");
+  card.className = "question-card";
+  card.innerHTML = `
+    <div class="question-number">Question ${q.number}${q.multi_answer ? " (Choose multiple)" : ""}</div>
+    <div class="question-text">${escapeHtml(q.text)}</div>
+  `;
+
+  for (const src of q.images || []) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.className = "question-img";
+    img.loading = "lazy";
+    card.appendChild(img);
+  }
+
+  const choicesList = document.createElement("ul");
+  choicesList.className = "choices";
+  const selected = new Set(exam.answers[q.id] || []);
+
+  for (const choice of q.choices) {
+    const li = document.createElement("li");
+    li.className = "choice";
+    if (selected.has(choice.letter)) li.classList.add("selected");
+    li.innerHTML = `<span class="letter">${choice.letter}.</span>${escapeHtml(choice.text)}`;
+    li.dataset.letter = choice.letter;
+    li.addEventListener("click", () => {
+      if (q.multi_answer) {
+        li.classList.toggle("selected");
+        if (selected.has(choice.letter)) selected.delete(choice.letter);
+        else selected.add(choice.letter);
+      } else {
+        choicesList.querySelectorAll(".choice").forEach((el) => el.classList.remove("selected"));
+        selected.clear();
+        selected.add(choice.letter);
+        li.classList.add("selected");
+      }
+      exam.answers[q.id] = Array.from(selected);
+      const btn = palette.children[exam.index];
+      if (btn) btn.style.borderColor = "var(--good)";
+    });
+    choicesList.appendChild(li);
+  }
+  card.appendChild(choicesList);
+  main.appendChild(card);
+
+  const navRow = document.createElement("div");
+  navRow.className = "exam-nav";
+  navRow.style.marginTop = "16px";
+
+  const prevBtn = document.createElement("button");
+  prevBtn.textContent = "← Précédent";
+  prevBtn.disabled = exam.index === 0;
+  prevBtn.addEventListener("click", () => {
+    exam.index = Math.max(0, exam.index - 1);
+    render();
+  });
+  navRow.appendChild(prevBtn);
+
+  if (exam.index < exam.questions.length - 1) {
+    const nextBtn = document.createElement("button");
+    nextBtn.textContent = "Suivant →";
+    nextBtn.addEventListener("click", () => {
+      exam.index += 1;
+      render();
+    });
+    navRow.appendChild(nextBtn);
+  }
+
+  const finishBtn = document.createElement("button");
+  finishBtn.className = "danger";
+  finishBtn.textContent = "Terminer l'examen";
+  finishBtn.addEventListener("click", () => {
+    if (confirm("Terminer l'examen maintenant et voir le score ?")) {
+      finishExam(false);
+    }
+  });
+  navRow.appendChild(finishBtn);
+
+  main.appendChild(navRow);
+}
+
+function renderExamResults(main) {
+  const exam = state.exam;
+  if (!exam) {
+    main.innerHTML = `<div class="empty-state">Aucun résultat d'examen disponible.</div>`;
+    return;
+  }
+
+  const pct = exam.questions.length ? Math.round((100 * exam.score) / exam.questions.length) : 0;
+  const passed = pct >= EXAM_PASS_PCT;
+
+  renderPageHeader(main, "Résultats de l'examen", exam.timedOut ? "Temps écoulé — examen soumis automatiquement." : "");
+
+  const summary = document.createElement("div");
+  summary.className = "question-card";
+  summary.innerHTML = `
+    <div class="quiz-score">Score : ${exam.score} / ${exam.questions.length} (${pct}%)</div>
+    <div class="quiz-score" style="color:${passed ? "var(--good)" : "var(--bad)"}">${passed ? "✓ Objectif d'examen atteint (≈82%+)" : "✗ En dessous de l'objectif visé (≈82%+)"}</div>
+    <div class="page-meta">Temps utilisé : ${formatClock(exam.durationSeconds)} / ${formatClock(exam.timeLimitSeconds)}</div>
+    <br>
+    <button class="primary" id="exam-again">Nouvel examen</button>
+    <button id="exam-flag-missed">★ Marquer toutes les questions ratées comme difficiles</button>
+  `;
+  main.appendChild(summary);
+
+  document.getElementById("exam-again").addEventListener("click", () => {
+    state.exam = null;
+    setView({ type: "exam-setup" });
+  });
+
+  const missed = exam.questions.filter((q) => {
+    const given = new Set(exam.answers[q.id] || []);
+    const correctSet = new Set(q.answer);
+    return !(given.size > 0 && correctSet.size === given.size && [...given].every((l) => correctSet.has(l)));
+  });
+
+  document.getElementById("exam-flag-missed").addEventListener("click", () => {
+    for (const q of missed) state.flagged.add(q.id);
+    saveSet(STORAGE_KEYS.flagged, state.flagged);
+    updateSidebarCounts();
+    render();
+  });
+
+  const missedHeader = document.createElement("div");
+  missedHeader.className = "page-title";
+  missedHeader.style.fontSize = "16px";
+  missedHeader.style.margin = "20px 0 10px";
+  missedHeader.textContent = `Questions ratées (${missed.length})`;
+  main.appendChild(missedHeader);
+
+  if (!missed.length) {
+    main.innerHTML += `<div class="empty-state">Aucune erreur — excellent travail !</div>`;
+  } else {
+    for (const q of missed) {
+      main.appendChild(renderMissedQuestionCard(q, exam.answers[q.id] || []));
+    }
+  }
+
+  renderExamHistoryTable(main);
+}
+
+function renderMissedQuestionCard(q, givenLetters) {
+  const card = document.createElement("div");
+  card.className = "question-card";
+
+  const isFlagged = state.flagged.has(q.id);
+  const head = document.createElement("div");
+  head.className = "question-head";
+  head.innerHTML = `
+    <span class="question-number">Question ${q.number} — ${escapeHtml(q.pageTitle)}</span>
+    <button class="flag-btn ${isFlagged ? "flagged" : ""}">${isFlagged ? "★" : "☆"}</button>
+  `;
+  head.querySelector(".flag-btn").addEventListener("click", () => {
+    toggleFlag(q.id);
+    head.querySelector(".flag-btn").classList.toggle("flagged");
+    head.querySelector(".flag-btn").textContent = state.flagged.has(q.id) ? "★" : "☆";
+    updateSidebarCounts();
+  });
+  card.appendChild(head);
+
+  const textEl = document.createElement("div");
+  textEl.className = "question-text";
+  textEl.textContent = q.text;
+  card.appendChild(textEl);
+
+  const choicesList = document.createElement("ul");
+  choicesList.className = "choices";
+  for (const choice of q.choices) {
+    const li = document.createElement("li");
+    li.className = "choice";
+    if (q.answer.includes(choice.letter)) li.classList.add("correct");
+    else if (givenLetters.includes(choice.letter)) li.classList.add("incorrect");
+    li.innerHTML = `<span class="letter">${choice.letter}.</span>${escapeHtml(choice.text)}`;
+    choicesList.appendChild(li);
+  }
+  card.appendChild(choicesList);
+
+  const answerBox = document.createElement("div");
+  answerBox.className = "answer-reveal";
+  answerBox.textContent = `Ta réponse : ${givenLetters.length ? givenLetters.join(", ") : "(non répondu)"} — Bonne réponse : ${q.answer.join(", ")}`;
+  card.appendChild(answerBox);
+
+  if (q.explanation) {
+    const expBox = document.createElement("div");
+    expBox.className = "explanation-box";
+    expBox.textContent = q.explanation;
+    card.appendChild(expBox);
+  }
+
+  const ref = document.createElement("div");
+  ref.className = "reference-link";
+  ref.innerHTML = `Page source : <a href="#" class="goto-page">${escapeHtml(q.pageTitle)}</a>${q.reference ? ` — Référence externe : <a href="${escapeHtml(q.reference)}" target="_blank" rel="noopener noreferrer">${escapeHtml(q.reference)}</a>` : ""}`;
+  ref.querySelector(".goto-page").addEventListener("click", (e) => {
+    e.preventDefault();
+    setView({ type: "page", pageUrl: q.pageUrl });
+  });
+  card.appendChild(ref);
+
+  return card;
+}
+
 function updateProgressBar() {
   const total = state.questions.length;
   const seenCount = state.questions.filter((q) => state.seen.has(q.id)).length;
@@ -576,6 +1015,7 @@ async function init() {
   state.flagged = loadSet(STORAGE_KEYS.flagged);
   state.seen = loadSet(STORAGE_KEYS.seen);
   state.quizStats = loadStats();
+  state.examHistory = loadExamHistory();
 
   try {
     await loadData();

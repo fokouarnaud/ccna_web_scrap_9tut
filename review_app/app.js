@@ -218,6 +218,17 @@ function renderQuestionCard(q, options = {}) {
     li.className = "choice";
     li.innerHTML = `<span class="letter">${choice.letter}.</span>${escapeHtml(choice.text)}`;
     li.dataset.letter = choice.letter;
+    li.addEventListener("click", () => {
+      if (q.multi_answer) {
+        li.classList.toggle("selected");
+      } else {
+        choicesList.querySelectorAll(".choice").forEach((el) => el.classList.remove("selected"));
+        li.classList.add("selected");
+      }
+      if (!answerBox.classList.contains("hidden")) {
+        updateChoiceColors(choicesList, q.answer, selectedLetters(choicesList));
+      }
+    });
     choicesList.appendChild(li);
   }
   card.appendChild(choicesList);
@@ -225,15 +236,22 @@ function renderQuestionCard(q, options = {}) {
   const answerRow = document.createElement("div");
   answerRow.className = "answer-row";
   const revealBtn = document.createElement("button");
+  revealBtn.className = "reveal-btn";
   revealBtn.textContent = "Révéler la réponse";
   const answerBox = document.createElement("div");
   answerBox.className = "answer-reveal hidden";
   answerBox.textContent = `Réponse : ${q.answer.join(", ")}`;
 
   revealBtn.addEventListener("click", () => {
-    answerBox.classList.remove("hidden");
-    markSeen(q.id);
-    highlightChoices(choicesList, q.answer);
+    answerBox.classList.toggle("hidden");
+    const revealed = !answerBox.classList.contains("hidden");
+    revealBtn.textContent = revealed ? "Masquer la réponse" : "Révéler la réponse";
+    if (revealed) {
+      markSeen(q.id);
+      updateChoiceColors(choicesList, q.answer, selectedLetters(choicesList));
+    } else {
+      choicesList.querySelectorAll(".choice").forEach((li) => li.classList.remove("correct", "incorrect"));
+    }
   });
   answerRow.appendChild(revealBtn);
 
@@ -243,7 +261,10 @@ function renderQuestionCard(q, options = {}) {
     const expBox = document.createElement("div");
     expBox.className = "explanation-box hidden";
     expBox.textContent = q.explanation;
-    expBtn.addEventListener("click", () => expBox.classList.remove("hidden"));
+    expBtn.addEventListener("click", () => {
+      expBox.classList.toggle("hidden");
+      expBtn.textContent = expBox.classList.contains("hidden") ? "Voir l'explication" : "Masquer l'explication";
+    });
     answerRow.appendChild(expBtn);
     card.appendChild(answerRow);
     card.appendChild(answerBox);
@@ -262,15 +283,25 @@ function renderQuestionCard(q, options = {}) {
 
   if (!state.globalAnswersHidden) {
     answerBox.classList.remove("hidden");
+    revealBtn.textContent = "Masquer la réponse";
+    updateChoiceColors(choicesList, q.answer, selectedLetters(choicesList));
   }
 
   return card;
 }
 
-function highlightChoices(choicesList, correctLetters) {
+function selectedLetters(choicesList) {
+  return new Set(Array.from(choicesList.querySelectorAll(".choice.selected")).map((el) => el.dataset.letter));
+}
+
+function updateChoiceColors(choicesList, correctLetters, selectedSet) {
   choicesList.querySelectorAll(".choice").forEach((li) => {
-    if (correctLetters.includes(li.dataset.letter)) {
+    const letter = li.dataset.letter;
+    li.classList.remove("correct", "incorrect");
+    if (correctLetters.includes(letter)) {
       li.classList.add("correct");
+    } else if (selectedSet.has(letter)) {
+      li.classList.add("incorrect");
     }
   });
 }
@@ -1174,8 +1205,20 @@ function setupToolbar() {
   toggleBtn.addEventListener("click", () => {
     state.globalAnswersHidden = !state.globalAnswersHidden;
     toggleBtn.textContent = state.globalAnswersHidden ? "Afficher toutes les réponses" : "Cacher toutes les réponses";
-    document.querySelectorAll(".answer-reveal").forEach((el) => {
-      el.classList.toggle("hidden", state.globalAnswersHidden);
+    document.querySelectorAll(".question-card").forEach((card) => {
+      const answerBox = card.querySelector(".answer-reveal");
+      if (!answerBox) return;
+      answerBox.classList.toggle("hidden", state.globalAnswersHidden);
+      const revealBtn = card.querySelector(".reveal-btn");
+      if (revealBtn) revealBtn.textContent = state.globalAnswersHidden ? "Révéler la réponse" : "Masquer la réponse";
+      const choicesList = card.querySelector(".choices");
+      if (!choicesList) return;
+      if (state.globalAnswersHidden) {
+        choicesList.querySelectorAll(".choice").forEach((li) => li.classList.remove("correct", "incorrect"));
+      } else {
+        const q = state.questions.find((qq) => qq.id === card.dataset.qid);
+        if (q) updateChoiceColors(choicesList, q.answer, selectedLetters(choicesList));
+      }
     });
   });
 

@@ -124,6 +124,26 @@ function setView(view) {
   state.currentView = view;
   highlightActiveNav();
   render();
+  closeMobileNav();
+  window.scrollTo(0, 0);
+}
+
+function closeMobileNav() {
+  const sidebar = document.getElementById("sidebar");
+  const toggle = document.getElementById("sidebar-toggle");
+  sidebar.classList.remove("nav-open");
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.textContent = "☰ Menu";
+}
+
+function setupSidebarToggle() {
+  const sidebar = document.getElementById("sidebar");
+  const toggle = document.getElementById("sidebar-toggle");
+  toggle.addEventListener("click", () => {
+    const isOpen = sidebar.classList.toggle("nav-open");
+    toggle.setAttribute("aria-expanded", String(isOpen));
+    toggle.textContent = isOpen ? "✕ Fermer" : "☰ Menu";
+  });
 }
 
 function highlightActiveNav() {
@@ -1413,6 +1433,7 @@ async function startApp() {
   buildSidebar();
   setupToolbar();
   setupUserBar();
+  setupSidebarToggle();
   updateProgressBar();
   setView({ type: state.pages.length ? "page" : "quiz-setup", pageUrl: state.pages.length ? state.pages[0].url : null });
 

@@ -8,7 +8,15 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="auth-screen" class="auth-screen">
+  <div id="global-progress"><div id="global-progress-bar"></div></div>
+  <div id="toast-container" aria-live="polite"></div>
+
+  <div id="app-loading" class="app-loading">
+    <div class="spinner spinner-lg"></div>
+    <div class="page-meta">Chargement…</div>
+  </div>
+
+  <div id="auth-screen" class="auth-screen hidden">
     <div class="auth-box">
       <h1>CCNA 200-301 — Révision</h1>
       <p class="page-meta">Connecte-toi pour que ta progression (questions vues, difficiles, quiz, examens) soit enregistrée de façon permanente sur le serveur — plus de risque de la perdre en vidant le cache du navigateur.</p>
@@ -56,7 +64,7 @@
         <button id="toggle-answers">Afficher toutes les réponses</button>
       </div>
       <div id="main-content">
-        <div class="empty-state">Chargement des données…</div>
+        <div class="empty-state"><div class="spinner"></div><div>Chargement des données…</div></div>
       </div>
     </div>
   </div>

@@ -701,7 +701,7 @@ function renderExamSetup(main, difficultOnly) {
   document.getElementById("exam-start").addEventListener("click", () => {
     const checkedUrls = Array.from(pickerBox.querySelectorAll(".exam-page-check:checked")).map((el) => el.value);
     if (!checkedUrls.length) {
-      alert("Coche au moins une page pour démarrer l'examen.");
+      showToast("Coche au moins une page pour démarrer l'examen.", "error");
       return;
     }
     const checkedSet = new Set(checkedUrls);
@@ -1271,9 +1271,11 @@ function renderAccountPanel(main) {
   `;
   main.appendChild(infoBox);
 
-  document.getElementById("account-save").addEventListener("click", async () => {
+  document.getElementById("account-save").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
     const errorEl = document.getElementById("account-info-error");
     errorEl.classList.add("hidden");
+    setButtonLoading(btn, true, "Enregistrement…");
     try {
       const display_name = document.getElementById("account-display-name").value.trim();
       const email = document.getElementById("account-email").value.trim();
@@ -1281,10 +1283,12 @@ function renderAccountPanel(main) {
       state.user.display_name = display_name;
       state.user.email = email;
       document.getElementById("user-name").textContent = display_name || state.user.username;
-      alert("Informations mises à jour.");
+      showToast("Informations mises à jour.");
     } catch (e) {
       errorEl.textContent = e.message;
       errorEl.classList.remove("hidden");
+    } finally {
+      setButtonLoading(btn, false);
     }
   });
 
@@ -1299,17 +1303,21 @@ function renderAccountPanel(main) {
   `;
   main.appendChild(pwBox);
 
-  document.getElementById("account-password-save").addEventListener("click", async () => {
+  document.getElementById("account-password-save").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
     const errorEl = document.getElementById("account-password-error");
     errorEl.classList.add("hidden");
     const password = document.getElementById("account-new-password").value;
+    setButtonLoading(btn, true, "Changement…");
     try {
       await Api.changePassword(password);
       document.getElementById("account-new-password").value = "";
-      alert("Mot de passe changé.");
+      showToast("Mot de passe changé.");
     } catch (e) {
       errorEl.textContent = e.message;
       errorEl.classList.remove("hidden");
+    } finally {
+      setButtonLoading(btn, false);
     }
   });
 
@@ -1322,27 +1330,63 @@ function renderAccountPanel(main) {
   `;
   main.appendChild(dangerBox);
 
-  document.getElementById("account-delete").addEventListener("click", async () => {
+  document.getElementById("account-delete").addEventListener("click", async (e) => {
     if (!confirm("Supprimer définitivement ton compte et toutes tes données ? Cette action est irréversible.")) return;
     if (!confirm("Confirme une dernière fois : supprimer le compte maintenant ?")) return;
+    const btn = e.currentTarget;
+    setButtonLoading(btn, true, "Suppression…");
     try {
       await Api.deleteMe();
       Api.clearToken();
       location.reload();
     } catch (e) {
-      alert("Erreur lors de la suppression : " + e.message);
+      showToast("Erreur lors de la suppression : " + e.message, "error");
+      setButtonLoading(btn, false);
     }
   });
 }
 
+function hideLoadingScreen() {
+  document.getElementById("app-loading").classList.add("hidden");
+}
+
 function showAuthScreen() {
+  hideLoadingScreen();
   document.getElementById("auth-screen").classList.remove("hidden");
   document.getElementById("app-root").classList.add("hidden");
 }
 
 function showApp() {
+  hideLoadingScreen();
   document.getElementById("auth-screen").classList.add("hidden");
   document.getElementById("app-root").classList.remove("hidden");
+}
+
+function setButtonLoading(btn, loading, loadingText) {
+  if (loading) {
+    if (btn.dataset.originalHtml === undefined) btn.dataset.originalHtml = btn.innerHTML;
+    btn.innerHTML = `<span class="btn-spinner"></span>${escapeHtml(loadingText || "Chargement…")}`;
+    btn.disabled = true;
+  } else {
+    if (btn.dataset.originalHtml !== undefined) {
+      btn.innerHTML = btn.dataset.originalHtml;
+      delete btn.dataset.originalHtml;
+    }
+    btn.disabled = false;
+  }
+}
+
+function showToast(message, type = "success") {
+  const container = document.getElementById("toast-container");
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("show"));
+  setTimeout(() => {
+    toast.classList.remove("show");
+    setTimeout(() => toast.remove(), 250);
+  }, 3200);
 }
 
 function setupAuthScreen() {
@@ -1368,8 +1412,10 @@ function setupAuthScreen() {
     e.preventDefault();
     const errorEl = document.getElementById("login-error");
     errorEl.classList.add("hidden");
+    const submitBtn = loginForm.querySelector("button[type=submit]");
     const username = document.getElementById("login-username").value.trim();
     const password = document.getElementById("login-password").value;
+    setButtonLoading(submitBtn, true, "Connexion…");
     try {
       const res = await Api.login(username, password);
       Api.setToken(res.token);
@@ -1378,6 +1424,7 @@ function setupAuthScreen() {
     } catch (err) {
       errorEl.textContent = err.message;
       errorEl.classList.remove("hidden");
+      setButtonLoading(submitBtn, false);
     }
   });
 
@@ -1385,9 +1432,11 @@ function setupAuthScreen() {
     e.preventDefault();
     const errorEl = document.getElementById("register-error");
     errorEl.classList.add("hidden");
+    const submitBtn = registerForm.querySelector("button[type=submit]");
     const username = document.getElementById("register-username").value.trim();
     const email = document.getElementById("register-email").value.trim();
     const password = document.getElementById("register-password").value;
+    setButtonLoading(submitBtn, true, "Création du compte…");
     try {
       const res = await Api.register(username, password, email || null);
       Api.setToken(res.token);
@@ -1396,6 +1445,7 @@ function setupAuthScreen() {
     } catch (err) {
       errorEl.textContent = err.message;
       errorEl.classList.remove("hidden");
+      setButtonLoading(submitBtn, false);
     }
   });
 }
@@ -1403,7 +1453,9 @@ function setupAuthScreen() {
 function setupUserBar() {
   document.getElementById("user-name").textContent = state.user.display_name || state.user.username;
   document.getElementById("account-btn").addEventListener("click", () => setView({ type: "account" }));
-  document.getElementById("logout-btn").addEventListener("click", async () => {
+  document.getElementById("logout-btn").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
     try {
       await Api.logout();
     } catch (e) {

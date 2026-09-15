@@ -17,24 +17,38 @@ function setToken(token) {
   }
 }
 
+let activeRequests = 0;
+
+function updateGlobalProgress() {
+  const bar = document.getElementById("global-progress");
+  if (bar) bar.classList.toggle("active", activeRequests > 0);
+}
+
 async function apiCall(path, { method = "GET", body, auth = true } = {}) {
-  const headers = { "Content-Type": "application/json" };
-  if (auth) {
-    const token = getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+  activeRequests += 1;
+  updateGlobalProgress();
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (auth) {
+      const token = getToken();
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch(path, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || `Request failed (${res.status})`);
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  } finally {
+    activeRequests -= 1;
+    updateGlobalProgress();
   }
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || `Request failed (${res.status})`);
-    err.status = res.status;
-    throw err;
-  }
-  return data;
 }
 
 const Api = {

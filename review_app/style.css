@@ -22,6 +22,106 @@ body {
   overflow-x: hidden;
 }
 
+/* Global top progress bar: shown for the duration of any in-flight API request,
+   so a slow network call never reads as a frozen screen. */
+#global-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+  background: transparent;
+  overflow: hidden;
+}
+#global-progress.active { opacity: 1; }
+#global-progress-bar {
+  position: absolute;
+  top: 0;
+  left: -35%;
+  width: 35%;
+  height: 100%;
+  background: var(--accent);
+  animation: global-progress-slide 1.1s ease-in-out infinite;
+}
+@keyframes global-progress-slide {
+  0% { left: -35%; }
+  50% { left: 60%; }
+  100% { left: 110%; }
+}
+
+.app-loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--bg);
+  z-index: 900;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+.spinner-lg { width: 32px; height: 32px; border-width: 3px; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: -2px;
+}
+
+#toast-container {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+  width: min(92vw, 420px);
+}
+.toast {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  max-width: 100%;
+  text-align: center;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast-success { border-color: var(--good); }
+.toast-error { border-color: var(--bad); }
+
 #app-root {
   display: flex;
   min-height: 100vh;
@@ -113,11 +213,13 @@ body {
   flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid var(--border);
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.18);
   padding: 16px;
   overflow-y: auto;
   height: 100vh;
   position: sticky;
   top: 0;
+  z-index: 10;
 }
 
 #sidebar-top {
@@ -158,6 +260,7 @@ body {
   cursor: pointer;
   font-size: 13px;
   color: var(--text);
+  transition: background-color 0.12s ease;
 }
 
 .nav-item:hover { background: var(--panel-alt); }
@@ -181,6 +284,13 @@ body {
   flex-wrap: wrap;
   margin-bottom: 20px;
   align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--bg);
+  padding: 10px 0;
+  margin-top: -10px;
+  border-bottom: 1px solid var(--border);
 }
 
 button, select, input[type="text"], input[type="email"], input[type="password"] {
@@ -192,10 +302,16 @@ button, select, input[type="text"], input[type="email"], input[type="password"] 
   font-size: 14px;
   cursor: pointer;
   min-height: 40px;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, transform 0.08s ease, opacity 0.15s ease;
 }
 
 button:hover { border-color: var(--accent); }
+button:active { transform: scale(0.97); }
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
 button:focus-visible, select:focus-visible, input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -247,6 +363,12 @@ select { width: 100%; max-width: 100%; }
   border-radius: 8px;
   padding: 16px 18px;
   margin-bottom: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.question-card:hover {
+  border-color: #35485f;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
 }
 
 .question-head {
@@ -269,7 +391,9 @@ select { width: 100%; max-width: 100%; }
   font-size: 18px;
   padding: 0 4px;
   color: var(--muted);
+  transition: transform 0.15s ease, color 0.15s ease;
 }
+.flag-btn:hover { color: var(--warn); transform: scale(1.15); }
 .flag-btn.flagged { color: var(--warn); }
 
 .question-text {
@@ -288,8 +412,10 @@ select { width: 100%; max-width: 100%; }
   font-size: 14px;
   cursor: pointer;
   overflow-wrap: anywhere;
+  transition: border-color 0.12s ease, background-color 0.12s ease, transform 0.08s ease;
 }
 .choice:hover { border-color: var(--accent); }
+.choice:active { transform: scale(0.99); }
 .choice.selected { border-color: var(--accent); background: rgba(77,163,255,0.12); }
 .choice.correct { border-color: var(--good); background: rgba(63,191,111,0.15); }
 .choice.incorrect { border-color: var(--bad); background: rgba(229,83,75,0.15); }
@@ -321,6 +447,14 @@ select { width: 100%; max-width: 100%; }
   margin-top: 8px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.answer-reveal:not(.hidden), .explanation-box:not(.hidden) {
+  animation: fadeInUp 0.18s ease;
 }
 
 .reference-link {

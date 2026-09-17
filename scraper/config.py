@@ -19,3 +19,10 @@ QUESTIONS_FILE = DATA_DIR / "ccna_questions.json"
 LAB_SIMS_FILE = DATA_DIR / "lab_sims.json"
 
 REQUEST_DELAY_SECONDS = 1.5
+
+# Images referenced by scraped pages/questions are downloaded here so the app
+# never depends on 9tut.com staying up or hotlink-friendly. Served by Flask's
+# existing catch-all static route (server/app.py), so the URL prefix below
+# must match this directory's location under review_app/.
+IMAGES_DIR = ROOT_DIR / "review_app" / "images"
+IMAGES_URL_PREFIX = "/images"

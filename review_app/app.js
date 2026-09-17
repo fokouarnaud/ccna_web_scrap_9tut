@@ -85,11 +85,13 @@ function buildSidebar() {
     sidebar.appendChild(section);
   }
 
-  if (state.genericPages.length) {
+  const genericByCategory = groupBy(state.genericPages, (p) => p.category);
+  for (const [category, pages] of genericByCategory) {
     const section = document.createElement("div");
     section.className = "nav-section";
-    section.innerHTML = `<h2>Lab Sims &amp; Tutoriels</h2>`;
-    for (const page of state.genericPages) {
+    const heading = category === "CCNA Training" ? "CCNA Training (tutoriels)" : `${category} — Lab Sims & Tutoriels`;
+    section.innerHTML = `<h2>${escapeHtml(heading)}</h2>`;
+    for (const page of pages) {
       const item = navItem(page.title, "", () => setView({ type: "generic", pageUrl: page.url }));
       item.dataset.url = page.url;
       section.appendChild(item);
@@ -118,6 +120,40 @@ function groupBy(arr, keyFn) {
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function resolveInternalView(url) {
+  if (state.pages.some((p) => p.url === url)) return { type: "page", pageUrl: url };
+  if (state.genericPages.some((p) => p.url === url)) return { type: "generic", pageUrl: url };
+  return null;
+}
+
+function renderRelatedLinks(container, links, label) {
+  if (!links || !links.length) return;
+  const box = document.createElement("div");
+  box.className = "related-links";
+  const heading = document.createElement("span");
+  heading.className = "related-links-label";
+  heading.textContent = label;
+  box.appendChild(heading);
+  for (const link of links) {
+    const a = document.createElement("a");
+    a.textContent = link.text;
+    const view = resolveInternalView(link.url);
+    if (view) {
+      a.href = "#";
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        setView(view);
+      });
+    } else {
+      a.href = link.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    }
+    box.appendChild(a);
+  }
+  container.appendChild(box);
 }
 
 function setView(view) {
@@ -301,6 +337,8 @@ function renderQuestionCard(q, options = {}) {
     card.appendChild(ref);
   }
 
+  renderRelatedLinks(card, q.links, "📘 En savoir plus :");
+
   if (!state.globalAnswersHidden) {
     answerBox.classList.remove("hidden");
     revealBtn.textContent = "Masquer la réponse";
@@ -362,6 +400,14 @@ function renderQuestionPage(main, page) {
     intro.textContent = page.intro;
     main.appendChild(intro);
   }
+  for (const src of page.images || []) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.className = "question-img";
+    img.loading = "lazy";
+    main.appendChild(img);
+  }
+  renderRelatedLinks(main, page.links, "📘 En savoir plus :");
 
   renderQuestionList(main, page.questions.map((q) => ({ ...q, id: questionId(page.url, q.number), pageUrl: page.url, pageTitle: page.title })));
 }
@@ -383,6 +429,7 @@ function renderGenericPage(main, page) {
     img.loading = "lazy";
     main.appendChild(img);
   }
+  renderRelatedLinks(main, page.links, "🔗 Voir aussi :");
 }
 
 function renderFlaggedView(main) {

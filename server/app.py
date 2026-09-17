@@ -202,6 +202,8 @@ def get_questions():
                     "category": page["category"],
                     "section": page["section"],
                     "intro": page["intro"] or "",
+                    "images": json.loads(page["images"] or "[]"),
+                    "links": json.loads(page["links"] or "[]"),
                     "questions": [
                         {
                             "number": q["number"],
@@ -212,6 +214,7 @@ def get_questions():
                             "explanation": q["explanation"] or "",
                             "reference": q["reference"],
                             "images": json.loads(q["images"]),
+                            "links": json.loads(q["links"] or "[]"),
                         }
                         for q in questions
                     ],
@@ -236,6 +239,7 @@ def get_lab_sims():
                     "section": p["section"],
                     "text": p["text"] or "",
                     "images": json.loads(p["images"] or "[]"),
+                    "links": json.loads(p["links"] or "[]"),
                 }
                 for p in pages
             ]

@@ -54,15 +54,19 @@ CCNA_PASSWORD=...
 
 ```
 python -m scraper.run --limit 2      # test rapide sur 2 pages
-python -m scraper.run                # scrape tout (catégorie CCNA 200-301 + Premium Member Zone)
+python -m scraper.run                # scrape tout (CCNA 200-301 + Premium Member Zone + CCNA Training)
 python -m scraper.run --force        # force le re-scraping de tout (ignore le cache local)
 ```
 
 Résultats écrits dans :
-- `data/ccna_questions.json` — pages avec questions/choix/réponse/explication.
-- `data/lab_sims.json` — pages "Lab Sims" et autres pages sans format QCM (titre + texte + images).
+- `data/ccna_questions.json` — pages avec questions/choix/réponse/explication/images/liens.
+- `data/lab_sims.json` — pages "Lab Sims", tutoriels **CCNA Training** (Subnetting, VLAN, OSPF, ACLs, ...) et autres pages sans format QCM (titre + texte + images + liens).
 
-Le script est idempotent : relancer sans `--force` ne re-scrape que les pages absentes des fichiers JSON existants. La session de connexion est mise en cache dans `scraper/.auth_state.json`.
+Le script est idempotent : relancer sans `--force` ne re-scrape que les pages absentes des fichiers JSON existants. La session de connexion est mise en cache dans `scraper/.auth_state.json`. Un `--force` sur des centaines de pages est checkpointé tous les `CHECKPOINT_EVERY` (20) pages dans `scraper/run.py` : une interruption (crash, Ctrl-C) n'oblige pas à tout recommencer, il suffit de relancer **sans** `--force` pour reprendre où ça s'est arrêté.
+
+**Images** : à la fin du scraping, `python -m scraper.run` télécharge automatiquement (`scraper/download_images.py`) toutes les images référencées par les questions et pages dans `review_app/images/<domaine>/...`, et réécrit les JSON pour pointer vers ces copies locales au lieu de hotlink 9tut.com — l'app ne dépend donc plus de la disponibilité du site source. Relançable seule : `python -m scraper.download_images` (idempotent, ne re-télécharge que ce qui manque).
+
+**Liens internes** : les liens trouvés dans l'intro d'une page ou l'explication d'une question qui pointent vers une autre page 9tut.com (typiquement "lisez notre tutoriel VLAN") sont conservés dans un champ `links` et, côté app, deviennent des liens de navigation internes quand la page cible a aussi été scrapée (sinon ils s'ouvrent sur 9tut.com dans un nouvel onglet). Les tutoriels **CCNA Training** paginés (`.../tutorial`, `.../tutorial/2`, ...) sont automatiquement suivis et fusionnés en une seule page.
 
 ---
 
@@ -124,8 +128,8 @@ Le scraping (Phase 1, Playwright/Chromium) se fait **en local** — PythonAnywhe
 
 ### A. En local, avant de déployer
 
-1. Termine les Phases 1 et 2 en local (`python -m scraper.run`, puis `python -m server.import_data`) pour avoir `data/ccna_questions.json`, `data/lab_sims.json` et `data/app.db` à jour.
-2. Pousse le code sur un dépôt Git accessible depuis PythonAnywhere (GitHub, GitLab…), **ou** prévois d'uploader une archive zip via l'onglet **Files**. `data/app.db` étant listé dans `.gitignore`, transfère-le séparément (voir étape B.3) si tu veux partir avec les données déjà importées plutôt que ré-importer sur PythonAnywhere.
+1. Termine les Phases 1 et 2 en local (`python -m scraper.run`, puis `python -m server.import_data`) pour avoir `data/ccna_questions.json`, `data/lab_sims.json`, `review_app/images/` et `data/app.db` à jour.
+2. Pousse le code sur un dépôt Git accessible depuis PythonAnywhere (GitHub, GitLab…), **ou** prévois d'uploader une archive zip via l'onglet **Files**. `review_app/images/` (plusieurs dizaines de Mo) n'est pas exclu de Git par défaut — inclus-le dans le commit/l'archive comme le reste, sinon les images des questions ne s'afficheront pas une fois déployé. `data/app.db` étant listé dans `.gitignore`, transfère-le séparément (voir étape B.3) si tu veux partir avec les données déjà importées plutôt que ré-importer sur PythonAnywhere.
 
 ### B. Sur PythonAnywhere
 
@@ -195,16 +199,21 @@ Le scraping (Phase 1, Playwright/Chromium) se fait **en local** — PythonAnywhe
 ## Structure du projet
 
 ```
-scraper/        scraping Playwright -> data/*.json
+scraper/
+  run.py              orchestration (targets -> scrape -> download_images), checkpointé
+  parser.py           HTML 9tut.com -> questions/pages (texte, images, liens internes)
+  link_discovery.py   découverte des liens de menu (CCNA 200-301, Premium Member Zone, CCNA Training)
+  download_images.py  télécharge les images référencées -> review_app/images/, réécrit les JSON
 server/
   schema.sql    DDL SQLite (pages, questions, users, sessions, progress_*, exam_*)
-  db.py         connexion + transactions
+  db.py         connexion + transactions + migrations idempotentes (ALTER TABLE si colonne manquante)
   auth.py       hachage de mot de passe (PBKDF2)
   import_data.py  data/*.json -> data/app.db
-  app.py        API Flask + service des fichiers statiques de review_app/
+  app.py        API Flask + service des fichiers statiques de review_app/ (sert aussi review_app/images/)
 review_app/     frontend (HTML/CSS/JS), consomme l'API via api.js
+  images/       copies locales des images (générées par scraper/download_images.py, pas commitées à la main)
 data/
-  ccna_questions.json, lab_sims.json   sortie brute du scraper
+  ccna_questions.json, lab_sims.json   sortie brute du scraper (le second inclut la catégorie "CCNA Training")
   app.db        base SQLite (contenu + comptes + progression) — source de vérité à l'exécution
 requirements.txt          dépendances complètes (scraping + serveur) — usage local
 requirements-server.txt   dépendances minimales (Flask + python-dotenv) — usage hébergement (PythonAnywhere)

@@ -52,10 +52,20 @@ def get_premium_zone_links(page: Page) -> list[dict]:
     return links
 
 
+def get_training_links(page: Page) -> list[dict]:
+    """Links under the 'CCNA Training' sidebar heading — topic tutorials
+    (Subnetting, VLAN, OSPF, ACLs, ...) that question explanations and page
+    intros link back to (e.g. "please read our VLAN Tutorial")."""
+    links = page.evaluate(_JS_COLLECT_SECTION_LINKS, "CCNA Training")
+    logger.info("Found %d links under 'CCNA Training'", len(links))
+    return links
+
+
 def discover_all_links(page: Page) -> dict:
     page.goto(config.BASE_URL)
     page.wait_for_load_state("networkidle")
     return {
         "category": get_category_links(page),
         "premium": get_premium_zone_links(page),
+        "training": get_training_links(page),
     }

@@ -31,10 +31,21 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """Adds a column to an existing table if missing. `CREATE TABLE IF NOT
+    EXISTS` in schema.sql only creates the table on a brand-new database — it
+    does not alter one that already exists, so new columns need this."""
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db() -> None:
     conn = get_connection()
     try:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _ensure_column(conn, "pages", "links", "links TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(conn, "questions", "links", "links TEXT NOT NULL DEFAULT '[]'")
         conn.commit()
     finally:
         conn.close()

@@ -472,6 +472,21 @@ select { width: 100%; max-width: 100%; }
   display: block;
 }
 
+.related-links {
+  font-size: 12px;
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+.related-links-label {
+  color: var(--muted, #888);
+}
+.related-links a {
+  color: var(--accent);
+}
+
 .hidden { display: none !important; }
 
 .empty-state {

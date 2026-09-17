@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS pages (
   kind TEXT NOT NULL CHECK (kind IN ('qa', 'generic')),
   intro TEXT,
   text TEXT,
-  images TEXT NOT NULL DEFAULT '[]', -- JSON array, generic pages
+  images TEXT NOT NULL DEFAULT '[]', -- JSON array: generic pages' body images, or a qa page's intro images (e.g. a "Quick Summary" diagram)
+  links TEXT NOT NULL DEFAULT '[]', -- JSON [{text, url}], internal 9tut.com links found in the intro
   scraped_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS questions (
   explanation TEXT,
   reference TEXT,
   images TEXT NOT NULL DEFAULT '[]',   -- JSON array of image URLs
+  links TEXT NOT NULL DEFAULT '[]',    -- JSON [{text, url}], internal 9tut.com links (e.g. tutorial pages)
   UNIQUE (page_url, number)
 );
 

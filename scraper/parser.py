@@ -1,7 +1,10 @@
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, NavigableString, Tag
+
+INTERNAL_HOSTS = {"www.9tut.com", "9tut.com"}
 
 CHOICE_LINE_RE = re.compile(r"^([A-Z])\.\s*(.*)$")
 CHOICES_PARAGRAPH_RE = re.compile(r"^[A-Z]\.\s")
@@ -19,6 +22,7 @@ class Question:
     explanation: str
     reference: str | None
     images: list = field(default_factory=list)
+    links: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +34,7 @@ class Question:
             "explanation": self.explanation,
             "reference": self.reference,
             "images": self.images,
+            "links": self.links,
         }
 
 
@@ -39,6 +44,8 @@ class PageContent:
     title: str
     intro: str
     questions: list
+    images: list = field(default_factory=list)
+    links: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +53,8 @@ class PageContent:
             "title": self.title,
             "intro": self.intro,
             "questions": [q.to_dict() for q in self.questions],
+            "images": self.images,
+            "links": self.links,
         }
 
 
@@ -55,6 +64,7 @@ class GenericPage:
     title: str
     text: str
     images: list
+    links: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -62,6 +72,7 @@ class GenericPage:
             "title": self.title,
             "text": self.text,
             "images": self.images,
+            "links": self.links,
         }
 
 
@@ -78,12 +89,33 @@ def _node_text(node) -> str:
     return node.get_text(separator=" ")
 
 
+def _marker_tag(node) -> Tag | None:
+    """The element carrying the "Question N" marker class — usually a <span>
+    nested in a <p>, but on some pages (e.g. the first couple of questions on
+    a "Quick Summary" page) the class sits directly on the <p> itself with no
+    inner <span>. Missing that second form silently drops those questions
+    into the page intro instead of their own block."""
+    if not isinstance(node, Tag):
+        return None
+    if "ccnaquestionsnumber" in (node.get("class") or []):
+        return node
+    return node.find("span", class_="ccnaquestionsnumber")
+
+
 def _is_marker(node) -> bool:
-    return isinstance(node, Tag) and node.find("span", class_="ccnaquestionsnumber") is not None
+    return _marker_tag(node) is not None
 
 
 def _is_blank_paragraph(node) -> bool:
-    return isinstance(node, Tag) and node.name == "p" and _clean_text(node.get_text()) == ""
+    """True for a genuinely empty <p> (e.g. "&nbsp;" spacers) — NOT for a <p>
+    that only wraps an <img>, which also has empty get_text() but must still
+    reach the image-extraction step in the explanation loop below."""
+    return (
+        isinstance(node, Tag)
+        and node.name == "p"
+        and _clean_text(node.get_text()) == ""
+        and node.find("img") is None
+    )
 
 
 def _paragraph_starts_with_choice(node) -> bool:
@@ -114,6 +146,56 @@ def _extract_images(node) -> list:
     if not isinstance(node, Tag):
         return []
     return [img.get("src") for img in node.find_all("img") if img.get("src")]
+
+
+def _extract_images_from_nodes(nodes) -> list:
+    images = []
+    for node in nodes:
+        images.extend(_extract_images(node))
+    return images
+
+
+def _is_internal_link(absolute_url: str) -> bool:
+    try:
+        return urlparse(absolute_url).netloc.lower() in INTERNAL_HOSTS
+    except ValueError:
+        return False
+
+
+def _extract_links(node, base_url: str) -> list:
+    """Anchors pointing back into 9tut.com (e.g. "read our VLAN Tutorial"
+    inside a page intro or a question's explanation) — the only links worth
+    keeping, since they point at pages we scrape and can link to internally."""
+    if not isinstance(node, Tag):
+        return []
+    links = []
+    for a in node.find_all("a"):
+        href = a.get("href")
+        text = _clean_text(a.get_text())
+        if not href or not text:
+            continue
+        absolute = urljoin(base_url, href)
+        if _is_internal_link(absolute):
+            links.append({"text": text, "url": absolute})
+    return links
+
+
+def _extract_links_from_nodes(nodes, base_url: str) -> list:
+    links = []
+    for node in nodes:
+        links.extend(_extract_links(node, base_url))
+    return links
+
+
+def _dedup_links(links: list) -> list:
+    seen = set()
+    result = []
+    for link in links:
+        if link["url"] in seen:
+            continue
+        seen.add(link["url"])
+        result.append(link)
+    return result
 
 
 def _parse_choices(node) -> list:
@@ -149,6 +231,19 @@ def _find_content_div(soup: BeautifulSoup) -> Tag | None:
     return post.select_one("div.content") or post
 
 
+def _page_title(soup: BeautifulSoup, post: Tag | None, url: str) -> str:
+    """Most pages have an <h1>; a few (topic/archive index pages) don't, so
+    fall back to the <title> tag, e.g. "CCNA Training » CCNA Knowledge"."""
+    title_tag = post.find("h1") if post else None
+    if title_tag:
+        return _clean_text(title_tag.get_text())
+    head_title = soup.find("title")
+    if head_title:
+        text = _clean_text(head_title.get_text())
+        return text.split("»")[-1].strip() or text
+    return url
+
+
 def parse_question_page(html: str, url: str) -> PageContent | None:
     soup = BeautifulSoup(html, "html.parser")
     post = soup.select_one("div.post")
@@ -156,18 +251,18 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
     if content is None:
         return None
 
-    markers = content.find_all("span", class_="ccnaquestionsnumber")
-    if not markers:
+    if not content.select("p.ccnaquestionsnumber, span.ccnaquestionsnumber"):
         return None
 
-    title_tag = post.find("h1") if post else None
-    title = _clean_text(title_tag.get_text()) if title_tag else url
+    title = _page_title(soup, post, url)
 
     nodes = list(content.contents)
     marker_indices = [i for i, n in enumerate(nodes) if _is_marker(n)]
 
     intro_nodes = nodes[: marker_indices[0]]
     intro = _clean_text("".join(_node_text(n) for n in intro_nodes))
+    intro_links = _dedup_links(_extract_links_from_nodes(intro_nodes, url))
+    intro_images = _extract_images_from_nodes(intro_nodes)
 
     questions = []
     for idx, start in enumerate(marker_indices):
@@ -175,7 +270,7 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
         block = nodes[start:end]
 
         marker_node = block[0]
-        number_text = marker_node.find("span", class_="ccnaquestionsnumber").get_text()
+        number_text = _marker_tag(marker_node).get_text()
         number_match = re.search(r"\d+", number_text)
         number = int(number_match.group()) if number_match else idx + 1
 
@@ -188,7 +283,8 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
             answer = []
             explanation_parts = []
             reference = None
-            images = []
+            images = _extract_images_from_nodes(rest)
+            links = _dedup_links(_extract_links_from_nodes(rest, url))
             questions.append(
                 Question(
                     number=number,
@@ -199,6 +295,7 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
                     explanation=_clean_text(" ".join(explanation_parts)),
                     reference=reference,
                     images=images,
+                    links=links,
                 )
             )
             continue
@@ -223,10 +320,14 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
         choice_nodes = [n for n in rest[choices_idx:run_end] if _paragraph_starts_with_choice(n)]
 
         choices = []
-        images = []
+        # Diagrams (e.g. "Refer to the exhibit") sit in the question stem,
+        # before the choices — collect those images/links first.
+        images = _extract_images_from_nodes(rest[:choices_idx])
+        links = _extract_links_from_nodes(rest[:choices_idx], url)
         for node in choice_nodes:
             choices.extend(_parse_choices(node))
             images.extend(_extract_images(node))
+            links.extend(_extract_links(node, url))
 
         after_choices = rest[run_end:]
         answer_idx = next((i for i, n in enumerate(after_choices) if _is_answer_paragraph(n)), None)
@@ -251,10 +352,14 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
                     reference = link.get("href") if link else _clean_text(node.get_text())
                     continue
                 images.extend(_extract_images(node))
+                links.extend(_extract_links(node, url))
                 if in_explanation and isinstance(node, Tag) and node.name in ("p", "div", "pre"):
                     text = _clean_text(node.get_text())
                     if text:
                         explanation_parts.append(text)
+        else:
+            images.extend(_extract_images_from_nodes(after_choices))
+            links.extend(_extract_links_from_nodes(after_choices, url))
 
         questions.append(
             Question(
@@ -266,10 +371,11 @@ def parse_question_page(html: str, url: str) -> PageContent | None:
                 explanation=_clean_text(" ".join(explanation_parts)),
                 reference=reference,
                 images=images,
+                links=_dedup_links(links),
             )
         )
 
-    return PageContent(url=url, title=title, intro=intro, questions=questions)
+    return PageContent(url=url, title=title, intro=intro, questions=questions, images=intro_images, links=intro_links)
 
 
 def parse_generic_page(html: str, url: str) -> GenericPage:
@@ -277,8 +383,7 @@ def parse_generic_page(html: str, url: str) -> GenericPage:
     post = soup.select_one("div.post")
     content = _find_content_div(soup)
 
-    title_tag = post.find("h1") if post else None
-    title = _clean_text(title_tag.get_text()) if title_tag else url
+    title = _page_title(soup, post, url)
 
     if content is None:
         return GenericPage(url=url, title=title, text="", images=[])
@@ -289,8 +394,9 @@ def parse_generic_page(html: str, url: str) -> GenericPage:
         if _clean_text(p.get_text())
     ]
     images = [img.get("src") for img in content.find_all("img") if img.get("src")]
+    links = _dedup_links(_extract_links(content, url))
 
-    return GenericPage(url=url, title=title, text="\n\n".join(paragraphs), images=images)
+    return GenericPage(url=url, title=title, text="\n\n".join(paragraphs), images=images, links=links)
 
 
 def parse_page(html: str, url: str):
